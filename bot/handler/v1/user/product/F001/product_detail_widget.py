@@ -42,17 +42,14 @@ class DetailCode:
             return {"answer_name": "error", "data": {"detail": str(exc)}}
 
 
-@router.callback_query(
-    EntityActionCallback.filter(
-        (EntityActionCallback.entity_type == "product")
-        & (EntityActionCallback.action == "view")
-    )
-)
+@router.callback_query(EntityActionCallback.filter())
 async def handle_product_detail(
     callback: CallbackQuery,
     callback_data: EntityActionCallback,
     state: FSMContext,
 ) -> None:
+    if callback_data.entity_type != "product" or callback_data.action != "view":
+        return
     trigger = DetailTrigger()
     trigger_data = await trigger.run(callback, callback_data)
     code = DetailCode()

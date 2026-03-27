@@ -5,6 +5,9 @@ Product: Telegram Product Engineer Bot
 """
 from aiogram import Dispatcher
 
+from handler.v1.user.start_widget import router as start_router
+from handler.v1.user.chat.gpt_chat_widget import router as gpt_chat_router
+from handler.v1.user.chat.gpt_generate_widget import router as gpt_generate_router
 from handler.v1.user.product.F001.product_list_widget import router as product_list_router
 from handler.v1.user.product.F001.product_create_widget import router as product_create_router
 from handler.v1.user.product.F001.product_detail_widget import router as product_detail_router
@@ -16,6 +19,9 @@ from handler.v1.user.health.F009.health_widget import router as health_router
 def include_routers(dp: Dispatcher) -> None:
     """Attach every feature router to the dispatcher."""
     dp.include_routers(
+        start_router,
+        gpt_chat_router,
+        gpt_generate_router,
         product_list_router,
         product_create_router,
         product_detail_router,
