@@ -18,7 +18,9 @@ SYSTEM_PROMPT = (
     "You help users design products, write features, user stories, "
     "acceptance criteria, flows, use cases, and requirements.\n"
     "Be concise — Telegram messages have a 4096-char limit.\n"
-    "Answer in the user's language."
+    "Answer in the user's language.\n"
+    "IMPORTANT: NEVER use markdown formatting like **bold** or *italic*. "
+    "Use plain text only. No asterisks for emphasis."
 )
 
 
@@ -64,12 +66,12 @@ class OpenAIService:
         prompt = (
             f"Product: {name}\n"
             f"Description: {description}\n\n"
-            "Write a concise product summary with:\n"
-            "• Goal (1-2 sentences)\n"
-            "• Value proposition (1-2 sentences)\n"
-            "• Target users\n"
-            "• Key constraints\n"
-            "Be brief, structured."
+            "Write a concise product summary in the following structure:\n"
+            "1. Client — who is the target audience (1-2 sentences)\n"
+            "2. Problem — what pain point they have (1-2 sentences)\n"
+            "3. Solution — how this product solves it (2-3 sentences)\n"
+            "4. Key metrics — 3-5 measurable success metrics\n\n"
+            "Be brief. Use plain text only, NO markdown, NO asterisks."
         )
         return await self.chat(prompt)
 
@@ -126,6 +128,7 @@ class OpenAIService:
         prompt = (
             f"Original text:\n{original}\n\n"
             f"User's edit instruction: {user_instruction}\n\n"
-            "Return the corrected/updated text. Keep the same structure."
+            "Return the corrected/updated text. Keep the same structure.\n"
+            "Use plain text only, NO markdown, NO asterisks."
         )
         return await self.chat(prompt)

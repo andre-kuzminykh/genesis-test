@@ -112,10 +112,7 @@ def _stories_kb(stories: list[dict], feature_id: str) -> InlineKeyboardMarkup:
 
 def _summary_kb() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
-        [
-            InlineKeyboardButton(text="✏️ Редактировать", callback_data=WizardCB(action="edit").pack()),
-            InlineKeyboardButton(text="➡️ Далее", callback_data=WizardCB(action="next").pack()),
-        ],
+        [InlineKeyboardButton(text="➡️ Далее", callback_data=WizardCB(action="next").pack())],
     ])
 
 
@@ -215,20 +212,9 @@ async def handle_product_description(message: Message, state: FSMContext, bot: B
 
 # ─── Summary review ─────────────────────────────────────────
 
-@router.callback_query(WizardCB.filter(F.action == "edit"))
-async def handle_edit_summary(callback: CallbackQuery, state: FSMContext) -> None:
-    current = await state.get_state()
-    if current == ProductFSM.reviewing_summary.state:
-        await state.set_state(ProductFSM.editing_summary)
-        await callback.message.answer(
-            "✏️ Отправьте исправление текстом или голосом.\n"
-            "Можно написать что изменить, например: «Убери второй пункт» или «Добавь раздел про монетизацию»"
-        )
-    await callback.answer()
-
-
-@router.message(ProductFSM.editing_summary)
+@router.message(ProductFSM.reviewing_summary)
 async def handle_summary_edit_input(message: Message, state: FSMContext, bot: Bot) -> None:
+    """User sends text/voice while reviewing summary — treat as edit instruction."""
     instruction = await get_text_or_voice(message, bot)
     if not instruction:
         await message.answer("Отправьте текст или голосовое.")
@@ -244,15 +230,18 @@ async def handle_summary_edit_input(message: Message, state: FSMContext, bot: Bo
         return
 
     await state.update_data(product_summary=new_summary)
-    await state.set_state(ProductFSM.reviewing_summary)
     name = data["product_name"]
 
     for chunk in _send_long(f"📋 <b>Обновлённое саммери «{name}»:</b>\n\n{new_summary}"):
         await wait_msg.edit_text(chunk, reply_markup=_summary_kb())
 
 
-@router.callback_query(WizardCB.filter(F.action == "next"))
-async def handle_next_step(callback: CallbackQuery, state: FSMContext) -> None:
+@router.callback_query(WizardCB.filter())
+async def handle_wizard_cb(callback: CallbackQuery, callback_data: WizardCB, state: FSMContext) -> None:
+    if callback_data.action != "next":
+        await callback.answer()
+        return
+
     current = await state.get_state()
 
     if current == ProductFSM.reviewing_summary.state:
