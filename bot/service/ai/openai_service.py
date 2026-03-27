@@ -132,3 +132,37 @@ class OpenAIService:
             "Use plain text only, NO markdown, NO asterisks."
         )
         return await self.chat(prompt)
+
+    async def edit_features_list(self, current_list: str,
+                                 user_instruction: str) -> list[dict]:
+        """Edit a feature list based on user instruction. Return JSON array."""
+        prompt = (
+            f"Current feature list:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Apply the user's changes to the feature list.\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"name": "Feature Name", "description": "Description"}]\n'
+            "No markdown, no explanation — pure JSON array only."
+        )
+        raw = await self.chat(prompt)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+
+    async def edit_stories_list(self, current_list: str,
+                                user_instruction: str) -> list[dict]:
+        """Edit a stories list based on user instruction. Return JSON array."""
+        prompt = (
+            f"Current stories list:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Apply the user's changes to the stories list.\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"title": "Title", "want": "what user wants", "benefit": "why"}]\n'
+            "No markdown, no explanation — pure JSON array only."
+        )
+        raw = await self.chat(prompt)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)

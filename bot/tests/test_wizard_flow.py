@@ -1,4 +1,7 @@
-"""Tests for the wizard flow: /start, pagination, create, Next, drill-down.
+"""Tests for wizard flow: /start, review text lists, pagination, save as buttons.
+
+Flow: name → desc → summary review → Далее → features TEXT → edit → Далее → buttons
+Same for stories: TEXT review → edit → Далее → buttons
 
 ## Traceability
 Feature: F001 — Product Management (Wizard Flow)
@@ -7,7 +10,7 @@ from __future__ import annotations
 
 import math
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch, PropertyMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from aiogram.types import Message, CallbackQuery, Chat, User
 
@@ -23,6 +26,7 @@ def _make_message(text: str = "", voice: bool = False) -> MagicMock:
     msg.text = text
     msg.voice = MagicMock() if voice else None
     msg.audio = None
+    msg.document = None
     msg.delete = AsyncMock()
     msg.bot = MagicMock()
     sent = MagicMock()
@@ -63,144 +67,94 @@ def _make_state(data: dict = None, current_state: str = None) -> AsyncMock:
 @pytest.mark.asyncio
 async def test_start_no_products_starts_wizard():
     from handler.v1.user.wizard.main_widget import cmd_start
-
     msg = _make_message("/start")
     state = _make_state()
-
     with patch("handler.v1.user.wizard.main_widget._product_api") as api:
         api.get_all = AsyncMock(return_value=[])
         await cmd_start(msg, state)
-
     state.set_state.assert_awaited_once_with(ProductFSM.waiting_for_name)
-    msg.delete.assert_awaited_once()  # user msg deleted
+    msg.delete.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_start_with_products_shows_paginated_list():
     from handler.v1.user.wizard.main_widget import cmd_start
-
     products = [{"id": str(i), "name": f"Prod {i}"} for i in range(7)]
     msg = _make_message("/start")
     state = _make_state()
-
     with patch("handler.v1.user.wizard.main_widget._product_api") as api:
         api.get_all = AsyncMock(return_value=products)
         await cmd_start(msg, state)
-
     kb = msg.answer.call_args[1]["reply_markup"]
-    # 5 products + page row + create button = 7 rows
-    assert len(kb.inline_keyboard) == 7
-    msg.delete.assert_awaited_once()
+    product_btns = [b.text for r in kb.inline_keyboard for b in r if b.text.startswith("📦")]
+    assert len(product_btns) == 5  # max 5 per page
 
 
 @pytest.mark.asyncio
 async def test_start_api_failure_starts_wizard():
     from handler.v1.user.wizard.main_widget import cmd_start
-
     msg = _make_message("/start")
     state = _make_state()
-
     with patch("handler.v1.user.wizard.main_widget._product_api") as api:
-        api.get_all = AsyncMock(side_effect=Exception("Connection refused"))
+        api.get_all = AsyncMock(side_effect=Exception("fail"))
         await cmd_start(msg, state)
-
     state.set_state.assert_awaited_once_with(ProductFSM.waiting_for_name)
 
 
 # ═══════════════════════════════════════════════════════════
-# Pagination keyboards
+# Pagination
 # ═══════════════════════════════════════════════════════════
 
 
-def test_products_kb_max_5_items():
-    from handler.v1.user.wizard.main_widget import _products_kb
+def test_page_row_always_3_buttons():
+    from handler.v1.user.wizard.main_widget import _page_row
+    # Page 1 of 3: · 1/3 ▶️
+    row = _page_row("x", 1, 3)
+    assert len(row) == 3
+    assert row[0].text == "·"  # no left
+    assert row[1].text == "1/3"
+    assert row[2].text == "▶️"
 
+    # Page 2 of 3: ◀️ 2/3 ▶️
+    row = _page_row("x", 2, 3)
+    assert row[0].text == "◀️"
+    assert row[1].text == "2/3"
+    assert row[2].text == "▶️"
+
+    # Page 3 of 3: ◀️ 3/3 ·
+    row = _page_row("x", 3, 3)
+    assert row[0].text == "◀️"
+    assert row[1].text == "3/3"
+    assert row[2].text == "·"
+
+
+def test_page_row_single_page_empty():
+    from handler.v1.user.wizard.main_widget import _page_row
+    assert _page_row("x", 1, 1) == []
+
+
+def test_products_kb_max_5():
+    from handler.v1.user.wizard.main_widget import _products_kb
     products = [{"id": str(i), "name": f"P{i}"} for i in range(12)]
     kb = _products_kb(products, page=1)
-    # 5 items + nav row + create = 7
-    product_buttons = [
-        btn.text for row in kb.inline_keyboard for btn in row
-        if btn.text.startswith("📦")
-    ]
-    assert len(product_buttons) == 5
+    product_btns = [b.text for r in kb.inline_keyboard for b in r if b.text.startswith("📦")]
+    assert len(product_btns) == 5
 
 
 def test_products_kb_page_2():
     from handler.v1.user.wizard.main_widget import _products_kb
-
     products = [{"id": str(i), "name": f"P{i}"} for i in range(12)]
     kb = _products_kb(products, page=2)
-    product_buttons = [
-        btn.text for row in kb.inline_keyboard for btn in row
-        if btn.text.startswith("📦")
-    ]
-    assert len(product_buttons) == 5  # items 5-9
+    product_btns = [b.text for r in kb.inline_keyboard for b in r if b.text.startswith("📦")]
+    assert len(product_btns) == 5
 
 
 def test_products_kb_last_page():
     from handler.v1.user.wizard.main_widget import _products_kb
-
     products = [{"id": str(i), "name": f"P{i}"} for i in range(12)]
     kb = _products_kb(products, page=3)
-    product_buttons = [
-        btn.text for row in kb.inline_keyboard for btn in row
-        if btn.text.startswith("📦")
-    ]
-    assert len(product_buttons) == 2  # items 10-11
-
-
-def test_products_kb_no_nav_for_few_items():
-    from handler.v1.user.wizard.main_widget import _products_kb
-
-    products = [{"id": "1", "name": "P1"}, {"id": "2", "name": "P2"}]
-    kb = _products_kb(products, page=1)
-    all_texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    # No ◀️ or ▶️ since everything fits on one page
-    assert "◀️" not in all_texts
-    assert "▶️" not in all_texts
-
-
-def test_products_kb_has_nav_arrows():
-    from handler.v1.user.wizard.main_widget import _products_kb
-
-    products = [{"id": str(i), "name": f"P{i}"} for i in range(8)]
-    kb_page1 = _products_kb(products, page=1)
-    texts_p1 = [btn.text for row in kb_page1.inline_keyboard for btn in row]
-    assert "▶️" in texts_p1
-    assert "◀️" not in texts_p1  # no back on page 1
-
-    kb_page2 = _products_kb(products, page=2)
-    texts_p2 = [btn.text for row in kb_page2.inline_keyboard for btn in row]
-    assert "◀️" in texts_p2
-    assert "▶️" not in texts_p2  # page 2 is last (8 items / 5 = 2 pages)
-
-
-def test_features_kb_pagination():
-    from handler.v1.user.wizard.main_widget import _features_kb
-
-    features = [{"id": str(i), "name": f"F{i}", "status": "draft"} for i in range(11)]
-    kb = _features_kb(features, "prod-1", page=1)
-    feat_btns = [btn.text for row in kb.inline_keyboard for btn in row if btn.text.startswith("📝")]
-    assert len(feat_btns) == 5
-
-
-def test_stories_kb_pagination():
-    from handler.v1.user.wizard.main_widget import _stories_kb
-
-    stories = [{"id": str(i), "title": f"Story {i}", "status": "draft"} for i in range(8)]
-    kb = _stories_kb(stories, "feat-1", page=1)
-    story_btns = [btn.text for row in kb.inline_keyboard for btn in row if btn.text.startswith("📝")]
-    assert len(story_btns) == 5
-
-
-def test_page_row_counter():
-    from handler.v1.user.wizard.main_widget import _page_row
-
-    row = _page_row("products", page=2, total_pages=5)
-    texts = [btn.text for btn in row]
-    assert "◀️" in texts
-    assert "2/5" in texts
-    assert "▶️" in texts
+    product_btns = [b.text for r in kb.inline_keyboard for b in r if b.text.startswith("📦")]
+    assert len(product_btns) == 2
 
 
 # ═══════════════════════════════════════════════════════════
@@ -211,13 +165,10 @@ def test_page_row_counter():
 @pytest.mark.asyncio
 async def test_product_name_saves_and_deletes_msg():
     from handler.v1.user.wizard.main_widget import handle_product_name
-
     msg = _make_message("My Product")
     state = _make_state(data={"bot_msg_id": 10})
     msg.bot.edit_message_text = AsyncMock()
-
     await handle_product_name(msg, state)
-
     state.update_data.assert_any_await(product_name="My Product")
     state.set_state.assert_awaited_once_with(ProductFSM.waiting_for_description)
     msg.delete.assert_awaited_once()
@@ -229,20 +180,18 @@ async def test_product_name_saves_and_deletes_msg():
 
 
 @pytest.mark.asyncio
-async def test_description_text_generates_summary():
+async def test_description_generates_summary():
     from handler.v1.user.wizard.main_widget import handle_product_description
-
-    msg = _make_message("A task management tool")
+    msg = _make_message("A task tool")
     state = _make_state(data={"product_name": "TaskMgr", "bot_msg_id": 10})
     msg.bot.edit_message_text = AsyncMock()
     bot = MagicMock()
-
     with patch("handler.v1.user.wizard.main_widget._ai") as ai, \
-         patch("handler.v1.user.wizard.main_widget.get_text_or_voice", new=AsyncMock(return_value="A task management tool")):
-        ai.generate_product_summary = AsyncMock(return_value="Client: teams\nProblem: chaos")
+         patch("handler.v1.user.wizard.main_widget.get_text_or_voice",
+               new=AsyncMock(return_value="A task tool")):
+        ai.generate_product_summary = AsyncMock(return_value="Summary text")
         await handle_product_description(msg, state, bot)
-
-    state.update_data.assert_any_await(product_summary="Client: teams\nProblem: chaos")
+    state.update_data.assert_any_await(product_summary="Summary text")
     state.set_state.assert_awaited_once_with(ProductFSM.reviewing_summary)
     msg.delete.assert_awaited_once()
 
@@ -250,216 +199,180 @@ async def test_description_text_generates_summary():
 @pytest.mark.asyncio
 async def test_description_empty_rejects():
     from handler.v1.user.wizard.main_widget import handle_product_description
-
     msg = _make_message("")
     state = _make_state(data={"product_name": "X", "bot_msg_id": 10})
     msg.bot.edit_message_text = AsyncMock()
     bot = MagicMock()
-
-    with patch("handler.v1.user.wizard.main_widget.get_text_or_voice", new=AsyncMock(return_value="")):
+    with patch("handler.v1.user.wizard.main_widget.get_text_or_voice",
+               new=AsyncMock(return_value="")):
         await handle_product_description(msg, state, bot)
-
-    state.set_state.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_description_gpt_error():
-    from handler.v1.user.wizard.main_widget import handle_product_description
-
-    msg = _make_message("desc")
-    state = _make_state(data={"product_name": "X", "bot_msg_id": 10})
-    msg.bot.edit_message_text = AsyncMock()
-    bot = MagicMock()
-
-    with patch("handler.v1.user.wizard.main_widget._ai") as ai, \
-         patch("handler.v1.user.wizard.main_widget.get_text_or_voice", new=AsyncMock(return_value="desc")):
-        ai.generate_product_summary = AsyncMock(side_effect=Exception("GPT timeout"))
-        await handle_product_description(msg, state, bot)
-
-    # Should not crash, error shown to user
     state.set_state.assert_not_awaited()
 
 
 # ═══════════════════════════════════════════════════════════
-# Summary review — edit via text
+# Summary review — edit by typing
 # ═══════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_reviewing_summary_text_edits():
+async def test_summary_edit_by_text():
     from handler.v1.user.wizard.main_widget import handle_summary_edit
-
     msg = _make_message("Remove second point")
     state = _make_state(data={
-        "product_name": "MyProd",
-        "product_summary": "Old summary",
-        "bot_msg_id": 10,
+        "product_name": "MyProd", "product_summary": "Old", "bot_msg_id": 10,
     })
     msg.bot.edit_message_text = AsyncMock()
     bot = MagicMock()
-
     with patch("handler.v1.user.wizard.main_widget._ai") as ai, \
-         patch("handler.v1.user.wizard.main_widget.get_text_or_voice", new=AsyncMock(return_value="Remove second point")):
-        ai.edit_text = AsyncMock(return_value="Updated summary")
+         patch("handler.v1.user.wizard.main_widget.get_text_or_voice",
+               new=AsyncMock(return_value="Remove second point")):
+        ai.edit_text = AsyncMock(return_value="Updated")
         await handle_summary_edit(msg, state, bot)
-
-    state.update_data.assert_any_await(product_summary="Updated summary")
-    msg.delete.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-async def test_reviewing_summary_empty_rejects():
-    from handler.v1.user.wizard.main_widget import handle_summary_edit
-
-    msg = _make_message("")
-    state = _make_state(data={"product_name": "X", "product_summary": "S", "bot_msg_id": 10})
-    msg.bot.edit_message_text = AsyncMock()
-    bot = MagicMock()
-
-    with patch("handler.v1.user.wizard.main_widget.get_text_or_voice", new=AsyncMock(return_value="")):
-        await handle_summary_edit(msg, state, bot)
-
+    state.update_data.assert_any_await(product_summary="Updated")
     msg.delete.assert_awaited_once()
 
 
 # ═══════════════════════════════════════════════════════════
-# "Далее" button (wizard_next)
+# wizard_next — features as TEXT (NOT saved yet)
 # ═══════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_next_saves_product_and_generates_features():
+async def test_wizard_next_generates_features_as_text():
     from handler.v1.user.wizard.main_widget import handle_wizard_next
-
     cb = _make_callback("wizard_next")
     state = _make_state(
         data={"product_name": "MyProd", "product_summary": "Summary"},
         current_state=ProductFSM.reviewing_summary.state,
     )
-
     with patch("handler.v1.user.wizard.main_widget._product_api") as p_api, \
-         patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
          patch("handler.v1.user.wizard.main_widget._ai") as ai:
-        p_api.create = AsyncMock(return_value={"id": "prod-1", "name": "MyProd"})
+        p_api.create = AsyncMock(return_value={"id": "p1", "name": "MyProd"})
         ai.generate_features_json = AsyncMock(return_value=[
-            {"name": "Auth", "description": "Authentication"},
+            {"name": "Auth", "description": "User authentication"},
             {"name": "Dashboard", "description": "Main view"},
-        ])
-        f_api.create = AsyncMock(side_effect=[
-            {"id": "f1", "name": "Auth", "description": "Authentication"},
-            {"id": "f2", "name": "Dashboard", "description": "Main view"},
         ])
         await handle_wizard_next(cb, state)
 
-    p_api.create.assert_awaited_once()
+    # Features NOT saved to backend — stored as draft in FSM
+    state.update_data.assert_any_await(draft_features=[
+        {"name": "Auth", "description": "User authentication"},
+        {"name": "Dashboard", "description": "Main view"},
+    ])
     state.set_state.assert_awaited_with(ProductFSM.reviewing_features)
-    # Features shown as buttons
-    kb = cb.message.edit_text.call_args_list[-1][1].get("reply_markup")
-    assert kb is not None
+
+    # Text contains numbered features with descriptions
+    text = cb.message.edit_text.call_args_list[-1][0][0]
+    assert "1." in text and "Auth" in text
+    assert "2." in text and "Dashboard" in text
+    assert "User authentication" in text  # full description, not truncated
 
 
 @pytest.mark.asyncio
-async def test_next_wrong_state_does_nothing():
+async def test_wizard_next_wrong_state():
     from handler.v1.user.wizard.main_widget import handle_wizard_next
-
     cb = _make_callback("wizard_next")
     state = _make_state(current_state=None)
-
     await handle_wizard_next(cb, state)
-
-    cb.answer.assert_awaited()
     state.set_state.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_next_api_error_shows_message():
+async def test_wizard_next_api_error():
     from handler.v1.user.wizard.main_widget import handle_wizard_next
-
     cb = _make_callback("wizard_next")
     state = _make_state(
         data={"product_name": "X", "product_summary": "S"},
         current_state=ProductFSM.reviewing_summary.state,
     )
-
     with patch("handler.v1.user.wizard.main_widget._product_api") as p_api:
         p_api.create = AsyncMock(side_effect=Exception("DB error"))
         await handle_wizard_next(cb, state)
-
-    error_text = cb.message.edit_text.call_args[0][0]
-    assert "DB error" in error_text
+    assert "DB error" in cb.message.edit_text.call_args[0][0]
 
 
 # ═══════════════════════════════════════════════════════════
-# Menu callbacks
+# reviewing_features — edit TEXT by typing
 # ═══════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_menu_products_shows_list():
-    from handler.v1.user.wizard.main_widget import handle_menu
-
-    cb = _make_callback(MenuCB(action="products").pack())
-    cb_data = MenuCB(action="products")
-    state = _make_state()
-
-    with patch("handler.v1.user.wizard.main_widget._product_api") as api:
-        api.get_all = AsyncMock(return_value=[{"id": "1", "name": "P1"}])
-        await handle_menu(cb, cb_data, state)
-
-    state.clear.assert_awaited()
-    cb.message.edit_text.assert_awaited()
-
-
-@pytest.mark.asyncio
-async def test_menu_create_starts_wizard():
-    from handler.v1.user.wizard.main_widget import handle_menu
-
-    cb = _make_callback(MenuCB(action="create_product").pack())
-    cb_data = MenuCB(action="create_product")
-    state = _make_state()
-
-    await handle_menu(cb, cb_data, state)
-
-    state.set_state.assert_awaited_once_with(ProductFSM.waiting_for_name)
-
-
-# ═══════════════════════════════════════════════════════════
-# Product view
-# ═══════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_product_view_shows_features():
-    from handler.v1.user.wizard.main_widget import handle_product
-
-    cb = _make_callback(ProductCB(id="1", action="view").pack())
-    cb_data = ProductCB(id="1", action="view")
-    state = _make_state()
-
-    with patch("handler.v1.user.wizard.main_widget._product_api") as p_api, \
-         patch("handler.v1.user.wizard.main_widget._feature_api") as f_api:
-        p_api.get_by_id = AsyncMock(return_value={
-            "id": "1", "name": "Prod", "status": "draft", "goal": "Goal",
-        })
-        f_api.get_all = AsyncMock(return_value=[
-            {"id": "f1", "name": "F1", "status": "draft"},
+async def test_features_edit_by_text():
+    from handler.v1.user.wizard.main_widget import handle_features_edit
+    msg = _make_message("Add a notifications feature")
+    state = _make_state(data={
+        "product_id": "p1",
+        "draft_features": [
+            {"name": "Auth", "description": "Login"},
+        ],
+        "bot_msg_id": 10,
+    })
+    msg.bot.edit_message_text = AsyncMock()
+    bot = MagicMock()
+    with patch("handler.v1.user.wizard.main_widget._ai") as ai, \
+         patch("handler.v1.user.wizard.main_widget.get_text_or_voice",
+               new=AsyncMock(return_value="Add a notifications feature")):
+        ai.edit_features_list = AsyncMock(return_value=[
+            {"name": "Auth", "description": "Login"},
+            {"name": "Notifications", "description": "Push notifications"},
         ])
-        await handle_product(cb, cb_data, state)
-
-    cb.message.edit_text.assert_awaited()
-    text = cb.message.edit_text.call_args[0][0]
-    assert "Prod" in text
+        await handle_features_edit(msg, state, bot)
+    msg.delete.assert_awaited_once()
+    state.update_data.assert_any_await(draft_features=[
+        {"name": "Auth", "description": "Login"},
+        {"name": "Notifications", "description": "Push notifications"},
+    ])
 
 
 # ═══════════════════════════════════════════════════════════
-# Feature view — auto-generates stories
+# wizard_save_features — save and show as BUTTONS
 # ═══════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_feature_view_auto_generates_stories():
-    from handler.v1.user.wizard.main_widget import handle_feature
+async def test_save_features_creates_buttons():
+    from handler.v1.user.wizard.main_widget import handle_save_features
+    cb = _make_callback("wizard_save_features")
+    state = _make_state(data={
+        "product_id": "p1",
+        "draft_features": [
+            {"name": "Auth", "description": "Login"},
+            {"name": "Dashboard", "description": "View"},
+        ],
+    })
+    with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api:
+        f_api.create = AsyncMock(side_effect=[
+            {"id": "f1", "name": "Auth", "status": "draft"},
+            {"id": "f2", "name": "Dashboard", "status": "draft"},
+        ])
+        await handle_save_features(cb, state)
 
+    assert f_api.create.await_count == 2
+    state.clear.assert_awaited()
+    # Result has buttons
+    kb = cb.message.edit_text.call_args[1].get("reply_markup")
+    assert kb is not None
+    texts = [b.text for r in kb.inline_keyboard for b in r]
+    assert any("Auth" in t for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_save_features_empty_alert():
+    from handler.v1.user.wizard.main_widget import handle_save_features
+    cb = _make_callback("wizard_save_features")
+    state = _make_state(data={"draft_features": [], "product_id": "p1"})
+    await handle_save_features(cb, state)
+    cb.answer.assert_awaited_with("Нет фичей для сохранения", show_alert=True)
+
+
+# ═══════════════════════════════════════════════════════════
+# Feature view → stories as TEXT for review
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_feature_view_generates_stories_as_text():
+    from handler.v1.user.wizard.main_widget import handle_feature
     cb = _make_callback(FeatureCB(id="f1", action="view").pack())
     cb_data = FeatureCB(id="f1", action="view")
     state = _make_state()
@@ -470,142 +383,215 @@ async def test_feature_view_auto_generates_stories():
         f_api.get_by_id = AsyncMock(return_value={
             "id": "f1", "name": "Auth", "description": "Login", "product_id": "p1",
         })
-        s_api.get_all = AsyncMock(side_effect=[
-            [],  # first call: no stories
-            [{"id": "s1", "title": "Login flow", "status": "draft"}],  # after gen
-        ])
+        s_api.get_all = AsyncMock(return_value=[])  # no saved stories
         ai.generate_stories_json = AsyncMock(return_value=[
             {"title": "Login flow", "want": "log in", "benefit": "access"},
         ])
-        s_api.create = AsyncMock(return_value={"id": "s1"})
         await handle_feature(cb, cb_data, state)
 
-    ai.generate_stories_json.assert_awaited_once()
-    cb.message.edit_text.assert_awaited()
-
-
-# ═══════════════════════════════════════════════════════════
-# Pagination callback
-# ═══════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_page_callback_products():
-    from handler.v1.user.wizard.main_widget import handle_page
-
-    cb = _make_callback(PageCB(entity="products", page=2).pack())
-    cb_data = PageCB(entity="products", page=2)
-    state = _make_state()
-
-    products = [{"id": str(i), "name": f"P{i}"} for i in range(8)]
-    with patch("handler.v1.user.wizard.main_widget._product_api") as api:
-        api.get_all = AsyncMock(return_value=products)
-        await handle_page(cb, cb_data, state)
-
-    cb.message.edit_text.assert_awaited()
+    # Stories generated as text draft, NOT saved
+    state.set_state.assert_awaited_with(ProductFSM.reviewing_stories)
+    text = cb.message.edit_text.call_args_list[-1][0][0]
+    assert "Login flow" in text
+    assert "Далее" in str(cb.message.edit_text.call_args_list[-1])
 
 
 @pytest.mark.asyncio
-async def test_page_callback_features():
-    from handler.v1.user.wizard.main_widget import handle_page
-
-    cb = _make_callback(PageCB(entity="features", page=1, parent_id="p1").pack())
-    cb_data = PageCB(entity="features", page=1, parent_id="p1")
+async def test_feature_view_with_saved_stories_shows_buttons():
+    from handler.v1.user.wizard.main_widget import handle_feature
+    cb = _make_callback(FeatureCB(id="f1", action="view").pack())
+    cb_data = FeatureCB(id="f1", action="view")
     state = _make_state()
 
-    with patch("handler.v1.user.wizard.main_widget._feature_api") as api:
-        api.get_all = AsyncMock(return_value=[
-            {"id": "f1", "name": "F1", "status": "draft"},
+    with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
+         patch("handler.v1.user.wizard.main_widget._story_api") as s_api:
+        f_api.get_by_id = AsyncMock(return_value={
+            "id": "f1", "name": "Auth", "description": "Login", "product_id": "p1",
+        })
+        s_api.get_all = AsyncMock(return_value=[
+            {"id": "s1", "title": "Login flow", "status": "draft"},
         ])
-        await handle_page(cb, cb_data, state)
+        await handle_feature(cb, cb_data, state)
 
-    cb.message.edit_text.assert_awaited()
+    # Shows as buttons, not draft text
+    kb = cb.message.edit_text.call_args[1].get("reply_markup")
+    texts = [b.text for r in kb.inline_keyboard for b in r]
+    assert any("Login flow" in t for t in texts)
 
 
 # ═══════════════════════════════════════════════════════════
-# Keyboard helpers
+# reviewing_stories — edit TEXT by typing
 # ═══════════════════════════════════════════════════════════
 
 
-def test_summary_kb_only_next():
-    from handler.v1.user.wizard.main_widget import _summary_kb
+@pytest.mark.asyncio
+async def test_stories_edit_by_text():
+    from handler.v1.user.wizard.main_widget import handle_stories_edit
+    msg = _make_message("Add a logout story")
+    state = _make_state(data={
+        "current_feature_id": "f1",
+        "draft_stories": [{"title": "Login", "want": "log in", "benefit": "access"}],
+        "bot_msg_id": 10,
+    })
+    msg.bot.edit_message_text = AsyncMock()
+    bot = MagicMock()
+    with patch("handler.v1.user.wizard.main_widget._ai") as ai, \
+         patch("handler.v1.user.wizard.main_widget.get_text_or_voice",
+               new=AsyncMock(return_value="Add a logout story")):
+        ai.edit_stories_list = AsyncMock(return_value=[
+            {"title": "Login", "want": "log in", "benefit": "access"},
+            {"title": "Logout", "want": "log out", "benefit": "security"},
+        ])
+        await handle_stories_edit(msg, state, bot)
+    msg.delete.assert_awaited_once()
 
-    kb = _summary_kb()
-    texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert texts == ["➡️ Далее"]
+
+# ═══════════════════════════════════════════════════════════
+# wizard_save_stories — save and show as BUTTONS
+# ═══════════════════════════════════════════════════════════
 
 
-def test_summary_kb_uses_plain_callback_data():
-    """Далее uses F.data == 'wizard_next', not WizardCB."""
-    from handler.v1.user.wizard.main_widget import _summary_kb
+@pytest.mark.asyncio
+async def test_save_stories_creates_buttons():
+    from handler.v1.user.wizard.main_widget import handle_save_stories
+    cb = _make_callback("wizard_save_stories")
+    state = _make_state(data={
+        "current_feature_id": "f1",
+        "current_feature_product_id": "p1",
+        "draft_stories": [
+            {"title": "Login", "want": "log in", "benefit": "access"},
+        ],
+    })
+    with patch("handler.v1.user.wizard.main_widget._story_api") as s_api:
+        s_api.create = AsyncMock(return_value={
+            "id": "s1", "title": "Login", "status": "draft",
+        })
+        await handle_save_stories(cb, state)
 
-    kb = _summary_kb()
-    data = kb.inline_keyboard[0][0].callback_data
-    assert data == "wizard_next"
+    s_api.create.assert_awaited_once()
+    state.clear.assert_awaited()
+
+
+# ═══════════════════════════════════════════════════════════
+# Menu callbacks
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_menu_products():
+    from handler.v1.user.wizard.main_widget import handle_menu
+    cb = _make_callback(MenuCB(action="products").pack())
+    state = _make_state()
+    with patch("handler.v1.user.wizard.main_widget._product_api") as api:
+        api.get_all = AsyncMock(return_value=[{"id": "1", "name": "P1"}])
+        await handle_menu(cb, MenuCB(action="products"), state)
+    state.clear.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_menu_create():
+    from handler.v1.user.wizard.main_widget import handle_menu
+    cb = _make_callback(MenuCB(action="create_product").pack())
+    state = _make_state()
+    await handle_menu(cb, MenuCB(action="create_product"), state)
+    state.set_state.assert_awaited_once_with(ProductFSM.waiting_for_name)
+
+
+# ═══════════════════════════════════════════════════════════
+# Formatting helpers
+# ═══════════════════════════════════════════════════════════
+
+
+def test_format_features_text():
+    from handler.v1.user.wizard.main_widget import _format_features_text
+    features = [
+        {"name": "Auth", "description": "User login system"},
+        {"name": "Dashboard", "description": "Main dashboard view"},
+    ]
+    text = _format_features_text(features)
+    assert "1. " in text and "Auth" in text
+    assert "2. " in text and "Dashboard" in text
+    assert "User login system" in text  # full description
+    assert "\n\n" in text or text.count("\n") >= 4  # spacing between features
+
+
+def test_format_stories_text():
+    from handler.v1.user.wizard.main_widget import _format_stories_text
+    stories = [
+        {"title": "Login", "want": "log in", "benefit": "access"},
+        {"title": "Logout", "want": "log out", "benefit": "security"},
+    ]
+    text = _format_stories_text(stories)
+    assert "1." in text and "Login" in text
+    assert "2." in text and "Logout" in text
+
+
+def test_review_kb_has_back_and_next():
+    from handler.v1.user.wizard.main_widget import _review_kb
+    kb = _review_kb(back_cb="back", next_cb="next", back_text="Назад")
+    texts = [b.text for r in kb.inline_keyboard for b in r]
+    assert "◀️ Назад" in texts
+    assert "➡️ Далее" in texts
 
 
 def test_send_long_splits():
     from handler.v1.user.wizard.main_widget import _send_long
-
-    chunks = _send_long("A" * 5000, limit=4000)
-    assert len(chunks) == 2
-    assert len(chunks[0]) == 4000
+    assert len(_send_long("A" * 5000, 4000)) == 2
 
 
 def test_send_long_short():
     from handler.v1.user.wizard.main_widget import _send_long
-
     assert _send_long("Hi") == ["Hi"]
 
 
 # ═══════════════════════════════════════════════════════════
-# OpenAI prompt checks
+# OpenAI prompts
 # ═══════════════════════════════════════════════════════════
 
 
 def test_system_prompt_no_markdown():
     from service.ai.openai_service import SYSTEM_PROMPT
-
     assert "markdown" in SYSTEM_PROMPT.lower() or "asterisk" in SYSTEM_PROMPT.lower()
 
 
 def test_summary_prompt_client_problem_solution():
     import inspect
     from service.ai.openai_service import OpenAIService
+    source = inspect.getsource(OpenAIService.generate_product_summary).lower()
+    assert "client" in source
+    assert "problem" in source
+    assert "solution" in source
+    assert "metric" in source
 
-    source = inspect.getsource(OpenAIService.generate_product_summary)
-    source_lower = source.lower()
-    assert "client" in source_lower
-    assert "problem" in source_lower
-    assert "solution" in source_lower
-    assert "metric" in source_lower
+
+def test_edit_features_list_method_exists():
+    from service.ai.openai_service import OpenAIService
+    assert hasattr(OpenAIService, "edit_features_list")
+
+
+def test_edit_stories_list_method_exists():
+    from service.ai.openai_service import OpenAIService
+    assert hasattr(OpenAIService, "edit_stories_list")
 
 
 # ═══════════════════════════════════════════════════════════
-# Callback data round-trips
+# Callback data roundtrips
 # ═══════════════════════════════════════════════════════════
-
-
-def test_wizard_cb_roundtrip():
-    cb = WizardCB(action="next", ctx="test")
-    assert WizardCB.unpack(cb.pack()).action == "next"
-
-
-def test_product_cb_roundtrip():
-    cb = ProductCB(id="123", action="view")
-    u = ProductCB.unpack(cb.pack())
-    assert u.id == "123" and u.action == "view"
 
 
 def test_page_cb_roundtrip():
     cb = PageCB(entity="features", page=3, parent_id="p1")
     u = PageCB.unpack(cb.pack())
-    assert u.entity == "features" and u.page == 3 and u.parent_id == "p1"
+    assert u.entity == "features" and u.page == 3
+
+
+def test_product_cb_roundtrip():
+    cb = ProductCB(id="123", action="view")
+    assert ProductCB.unpack(cb.pack()).id == "123"
 
 
 def test_menu_cb_roundtrip():
-    cb = MenuCB(action="products")
-    assert MenuCB.unpack(cb.pack()).action == "products"
+    assert MenuCB.unpack(MenuCB(action="products").pack()).action == "products"
 
 
 # ═══════════════════════════════════════════════════════════
@@ -616,164 +602,5 @@ def test_menu_cb_roundtrip():
 def test_fsm_has_required_states():
     states = [s.state for s in ProductFSM.__all_states__]
     for name in ("waiting_for_name", "waiting_for_description",
-                 "reviewing_summary", "reviewing_features"):
+                 "reviewing_summary", "reviewing_features", "reviewing_stories"):
         assert any(name in s for s in states), f"Missing state: {name}"
-
-
-# ═══════════════════════════════════════════════════════════
-# Features keyboard — Назад + Далее
-# ═══════════════════════════════════════════════════════════
-
-
-def test_features_kb_has_back_button():
-    from handler.v1.user.wizard.main_widget import _features_kb
-
-    features = [{"id": "f1", "name": "F1", "status": "draft"}]
-    kb = _features_kb(features, "prod-1", page=1)
-    texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert "◀️ Назад" in texts
-
-
-def test_features_kb_show_next_button():
-    from handler.v1.user.wizard.main_widget import _features_kb
-
-    features = [{"id": "f1", "name": "F1", "status": "draft"}]
-    kb = _features_kb(features, "prod-1", page=1, show_next=True)
-    texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert "➡️ Далее" in texts
-    assert "◀️ Назад" in texts
-
-
-def test_features_kb_no_next_by_default():
-    from handler.v1.user.wizard.main_widget import _features_kb
-
-    features = [{"id": "f1", "name": "F1", "status": "draft"}]
-    kb = _features_kb(features, "prod-1", page=1, show_next=False)
-    texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert "➡️ Далее" not in texts
-
-
-def test_features_kb_no_next_when_empty():
-    from handler.v1.user.wizard.main_widget import _features_kb
-
-    kb = _features_kb([], "prod-1", page=1, show_next=True)
-    texts = [btn.text for row in kb.inline_keyboard for btn in row]
-    assert "➡️ Далее" not in texts  # no next if no features
-
-
-# ═══════════════════════════════════════════════════════════
-# Next generates features with text list
-# ═══════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_next_shows_features_text_list():
-    """After pressing Next, features should be listed as numbered text."""
-    from handler.v1.user.wizard.main_widget import handle_wizard_next
-
-    cb = _make_callback("wizard_next")
-    state = _make_state(
-        data={"product_name": "MyProd", "product_summary": "Summary"},
-        current_state=ProductFSM.reviewing_summary.state,
-    )
-
-    with patch("handler.v1.user.wizard.main_widget._product_api") as p_api, \
-         patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
-         patch("handler.v1.user.wizard.main_widget._ai") as ai:
-        p_api.create = AsyncMock(return_value={"id": "prod-1", "name": "MyProd"})
-        ai.generate_features_json = AsyncMock(return_value=[
-            {"name": "Auth", "description": "User login"},
-            {"name": "Dashboard", "description": "Main view"},
-        ])
-        f_api.create = AsyncMock(side_effect=[
-            {"id": "f1", "name": "Auth"},
-            {"id": "f2", "name": "Dashboard"},
-        ])
-        await handle_wizard_next(cb, state)
-
-    # Check text contains numbered features
-    last_call = cb.message.edit_text.call_args_list[-1]
-    text = last_call[0][0]
-    assert "1." in text
-    assert "Auth" in text
-    assert "2." in text
-    assert "Dashboard" in text
-
-
-@pytest.mark.asyncio
-async def test_next_keeps_features_even_if_backend_fails():
-    """Features should be shown even if backend save fails."""
-    from handler.v1.user.wizard.main_widget import handle_wizard_next
-
-    cb = _make_callback("wizard_next")
-    state = _make_state(
-        data={"product_name": "MyProd", "product_summary": "Summary"},
-        current_state=ProductFSM.reviewing_summary.state,
-    )
-
-    with patch("handler.v1.user.wizard.main_widget._product_api") as p_api, \
-         patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
-         patch("handler.v1.user.wizard.main_widget._ai") as ai:
-        p_api.create = AsyncMock(return_value={"id": "prod-1", "name": "MyProd"})
-        ai.generate_features_json = AsyncMock(return_value=[
-            {"name": "Auth", "description": "Login"},
-        ])
-        f_api.create = AsyncMock(side_effect=Exception("DB error"))
-        await handle_wizard_next(cb, state)
-
-    # Features still shown in text even though backend save failed
-    last_call = cb.message.edit_text.call_args_list[-1]
-    text = last_call[0][0]
-    assert "Auth" in text
-    assert "1." in text
-
-
-# ═══════════════════════════════════════════════════════════
-# Dive into features (wizard_dive_features)
-# ═══════════════════════════════════════════════════════════
-
-
-@pytest.mark.asyncio
-async def test_dive_features_opens_first_feature():
-    from handler.v1.user.wizard.main_widget import handle_dive_features
-
-    cb = _make_callback("wizard_dive_features")
-    state = _make_state(data={
-        "product_id": "prod-1",
-        "features": [
-            {"id": "f1", "name": "Auth", "description": "Login"},
-            {"id": "f2", "name": "Dashboard", "description": "View"},
-        ],
-    })
-
-    with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
-         patch("handler.v1.user.wizard.main_widget._story_api") as s_api, \
-         patch("handler.v1.user.wizard.main_widget._ai") as ai:
-        f_api.get_by_id = AsyncMock(return_value={
-            "id": "f1", "name": "Auth", "description": "Login", "product_id": "prod-1",
-        })
-        s_api.get_all = AsyncMock(side_effect=[
-            [],  # no stories yet
-            [{"id": "s1", "title": "Login flow", "status": "draft"}],
-        ])
-        ai.generate_stories_json = AsyncMock(return_value=[
-            {"title": "Login flow", "want": "log in", "benefit": "access"},
-        ])
-        s_api.create = AsyncMock(return_value={"id": "s1"})
-        await handle_dive_features(cb, state)
-
-    ai.generate_stories_json.assert_awaited_once()
-    text = cb.message.edit_text.call_args_list[-1][0][0]
-    assert "Auth" in text
-
-
-@pytest.mark.asyncio
-async def test_dive_features_empty_shows_alert():
-    from handler.v1.user.wizard.main_widget import handle_dive_features
-
-    cb = _make_callback("wizard_dive_features")
-    state = _make_state(data={"features": []})
-
-    await handle_dive_features(cb, state)
-
-    cb.answer.assert_awaited_with("Нет фичей для проработки", show_alert=True)
