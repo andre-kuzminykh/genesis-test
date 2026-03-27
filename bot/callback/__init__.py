@@ -3,4 +3,4 @@
 ## Traceability
 Product: Telegram Product Engineer Bot
 """
-from callback.navigation_cb import MenuCB, ProductCB, FeatureCB, StoryCB, WizardCB
+from callback.navigation_cb import MenuCB, ProductCB, FeatureCB, StoryCB, WizardCB, PageCB

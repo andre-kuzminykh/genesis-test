@@ -41,3 +41,10 @@ class WizardCB(CallbackData, prefix="w"):
     """Wizard control buttons."""
     action: str  # next, edit, approve, back, approve_all
     ctx: str = ""  # context id (product_id, feature_id, etc.)
+
+
+class PageCB(CallbackData, prefix="pg"):
+    """Pagination navigation."""
+    entity: str  # products, features, stories
+    page: int
+    parent_id: str = ""
