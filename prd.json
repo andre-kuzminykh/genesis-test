@@ -1,0 +1,600 @@
+{
+  "product_name": "Telegram Product Engineer Bot",
+  "product_overview": "A Telegram bot that transforms raw product ideas into structured, traceable product specifications and supports the full engineering lifecycle: design, decomposition, test generation, architecture, code generation, build assembly, and Git export.",
+  "features": [
+    {
+      "feature_id": "F001",
+      "general_info": {
+        "name": "Product Management",
+        "overview": "CRUD operations for Product — the root entity of the system."
+      },
+      "goal_and_context": {
+        "business_goal": "Allow users to create and manage products as the root context for all downstream artifacts.",
+        "user_problem": "Users need a structured way to define products before creating features, stories, and other artifacts."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR001", "description": "Product must exist before any child entity is created." },
+        { "rule_id": "BR002", "description": "Product default status is draft." },
+        { "rule_id": "BR003", "description": "Every Product must be versioned (version >= 1)." },
+        { "rule_id": "BR004", "description": "Approval is version-bound. Changing content invalidates approval." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC001",
+          "user_story": "As a Product Owner, I want to create a product so that I can start defining features.",
+          "bdd": {
+            "given": "The user is authenticated",
+            "and_preconditions": [],
+            "when": "The user sends product data (name, description, goal)",
+            "then": "A new product is created in draft status with version 1",
+            "and_postconditions": ["product_id is assigned", "created_at is set"]
+          }
+        },
+        {
+          "scenario_id": "SC002",
+          "user_story": "As a Product Owner, I want to edit a product so that I can refine its definition.",
+          "bdd": {
+            "given": "A product exists",
+            "and_preconditions": [],
+            "when": "The user updates product fields",
+            "then": "The product is updated, version is incremented, approval is invalidated if previously approved",
+            "and_postconditions": ["updated_at is refreshed"]
+          }
+        },
+        {
+          "scenario_id": "SC003",
+          "user_story": "As a Product Owner, I want to approve a product so downstream generation can proceed.",
+          "bdd": {
+            "given": "A product exists in reviewed status",
+            "and_preconditions": [],
+            "when": "The user approves the product",
+            "then": "Status changes to approved, approved_version is set to current version",
+            "and_postconditions": ["approved_at and approved_by are recorded"]
+          }
+        }
+      ],
+      "non_functional_requirements": [
+        { "nfr_id": "NFR001", "type": "traceability", "description": "All products must be traceable by ID." },
+        { "nfr_id": "NFR002", "type": "versioning", "description": "Every entity must be versioned." }
+      ],
+      "test_cases": [
+        {
+          "test_id": "T001",
+          "scenario_id": "SC001",
+          "setup": "Empty database",
+          "action": "POST /api/v1/products with valid data",
+          "assertion": "201 Created, product returned with draft status and version 1",
+          "examples": [
+            { "input": { "name": "Test Product", "goal": "Validate spec" }, "expected": { "status": 201, "version": 1, "status_field": "draft" } }
+          ]
+        },
+        {
+          "test_id": "T002",
+          "scenario_id": "SC002",
+          "setup": "Product exists",
+          "action": "PUT /api/v1/products/{id} with updated fields",
+          "assertion": "200 OK, version incremented",
+          "examples": [
+            { "input": { "name": "Updated Product" }, "expected": { "status": 200 } }
+          ]
+        },
+        {
+          "test_id": "T003",
+          "scenario_id": "SC003",
+          "setup": "Product in reviewed status",
+          "action": "POST /api/v1/products/{id}/approve",
+          "assertion": "200 OK, status is approved, approved_version set",
+          "examples": [
+            { "input": {}, "expected": { "status": 200, "status_field": "approved" } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F002",
+      "general_info": {
+        "name": "Feature Management",
+        "overview": "CRUD for Features — primary decomposition unit of product scope."
+      },
+      "goal_and_context": {
+        "business_goal": "Decompose products into manageable features.",
+        "user_problem": "Users need to break down a product into features that can be independently specified."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR005", "description": "Feature belongs to exactly one Product." },
+        { "rule_id": "BR006", "description": "Physical deletion allowed only for unreferenced draft features." },
+        { "rule_id": "BR007", "description": "Feature has code, name, priority, sort_order." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC004",
+          "user_story": "As a Product Owner, I want to create a feature under a product.",
+          "bdd": {
+            "given": "A product exists",
+            "and_preconditions": [],
+            "when": "The user creates a feature with name and product_id",
+            "then": "Feature is created in draft status linked to the product",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC005",
+          "user_story": "As a Product Owner, I want to delete an unreferenced draft feature.",
+          "bdd": {
+            "given": "A draft feature exists with no downstream references",
+            "and_preconditions": [],
+            "when": "The user deletes the feature",
+            "then": "Feature is physically deleted",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC006",
+          "user_story": "As a Product Owner, I want to be prevented from deleting a referenced feature.",
+          "bdd": {
+            "given": "A feature has downstream stories",
+            "and_preconditions": [],
+            "when": "The user tries to delete the feature",
+            "then": "Deletion is rejected with an error",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T004",
+          "scenario_id": "SC004",
+          "setup": "Product exists",
+          "action": "POST /api/v1/features",
+          "assertion": "201 Created, feature linked to product",
+          "examples": [
+            { "input": { "product_id": "prod-1", "name": "Auth" }, "expected": { "status": 201 } }
+          ]
+        },
+        {
+          "test_id": "T005",
+          "scenario_id": "SC005",
+          "setup": "Draft feature, no refs",
+          "action": "DELETE /api/v1/features/{id}",
+          "assertion": "204 No Content",
+          "examples": [
+            { "input": {}, "expected": { "status": 204 } }
+          ]
+        },
+        {
+          "test_id": "T006",
+          "scenario_id": "SC006",
+          "setup": "Feature with downstream stories",
+          "action": "DELETE /api/v1/features/{id}",
+          "assertion": "409 Conflict",
+          "examples": [
+            { "input": {}, "expected": { "status": 409 } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F003",
+      "general_info": {
+        "name": "Actor Management",
+        "overview": "CRUD for Actors and Feature-Actor linking."
+      },
+      "goal_and_context": {
+        "business_goal": "Define actors at product level and link them to features.",
+        "user_problem": "Users need to manage actors and link them to features for story creation."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR008", "description": "Actor belongs to exactly one Product." },
+        { "rule_id": "BR009", "description": "Feature may link to one or more Actors via FeatureActorLink." },
+        { "rule_id": "BR010", "description": "Actor may be reused across multiple Features within the same Product." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC007",
+          "user_story": "As a Product Owner, I want to create an actor for a product.",
+          "bdd": {
+            "given": "A product exists",
+            "and_preconditions": [],
+            "when": "The user creates an actor with name and role_type",
+            "then": "Actor is created linked to the product",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC008",
+          "user_story": "As a Product Owner, I want to link an actor to a feature.",
+          "bdd": {
+            "given": "A product, feature, and actor exist",
+            "and_preconditions": [],
+            "when": "The user links the actor to the feature",
+            "then": "FeatureActorLink is created",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T007",
+          "scenario_id": "SC007",
+          "setup": "Product exists",
+          "action": "POST /api/v1/actors",
+          "assertion": "201 Created",
+          "examples": [
+            { "input": { "product_id": "prod-1", "name": "End User", "role_type": "primary" }, "expected": { "status": 201 } }
+          ]
+        },
+        {
+          "test_id": "T008",
+          "scenario_id": "SC008",
+          "setup": "Product, feature, actor exist",
+          "action": "POST /api/v1/feature-actor-links",
+          "assertion": "201 Created",
+          "examples": [
+            { "input": { "product_id": "prod-1", "feature_id": "feat-1", "actor_id": "actor-1" }, "expected": { "status": 201 } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F004",
+      "general_info": {
+        "name": "User Story Management",
+        "overview": "CRUD for User Stories with actor assignment and approval workflow."
+      },
+      "goal_and_context": {
+        "business_goal": "Capture user needs as structured stories.",
+        "user_problem": "Users need to write stories in canonical format (As/I want/So that) and link them to actors."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR011", "description": "Story belongs to exactly one Feature." },
+        { "rule_id": "BR012", "description": "Story references exactly one Actor." },
+        { "rule_id": "BR013", "description": "Story Actor must be linked to the Story's Feature via FeatureActorLink." },
+        { "rule_id": "BR014", "description": "Story cannot move downstream until Actor is assigned and Story is approved." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC009",
+          "user_story": "As a Product Owner, I want to create a user story for a feature.",
+          "bdd": {
+            "given": "A feature and actor exist, actor is linked to feature",
+            "and_preconditions": [],
+            "when": "The user creates a story with actor_id, want_text, benefit_text",
+            "then": "Story is created in draft status",
+            "and_postconditions": ["actor_id is validated against feature actor links"]
+          }
+        },
+        {
+          "scenario_id": "SC010",
+          "user_story": "As a Product Owner, I want to be prevented from creating a story with an unlinked actor.",
+          "bdd": {
+            "given": "A feature and actor exist but actor is NOT linked to feature",
+            "and_preconditions": [],
+            "when": "The user creates a story with that actor_id",
+            "then": "Creation is rejected with validation error",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T009",
+          "scenario_id": "SC009",
+          "setup": "Feature, actor, link exist",
+          "action": "POST /api/v1/stories",
+          "assertion": "201 Created",
+          "examples": [
+            { "input": { "feature_id": "feat-1", "actor_id": "actor-1", "title": "Login", "want_text": "log in", "benefit_text": "access" }, "expected": { "status": 201 } }
+          ]
+        },
+        {
+          "test_id": "T010",
+          "scenario_id": "SC010",
+          "setup": "Feature, actor exist but no link",
+          "action": "POST /api/v1/stories",
+          "assertion": "422 Validation Error",
+          "examples": [
+            { "input": { "feature_id": "feat-1", "actor_id": "actor-unlinked", "title": "Bad" }, "expected": { "status": 422 } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F005",
+      "general_info": {
+        "name": "User Flow Management",
+        "overview": "CRUD for User Flows stored in Mermaid format."
+      },
+      "goal_and_context": {
+        "business_goal": "Visualize user journeys as Mermaid diagrams.",
+        "user_problem": "Users need to create and approve flows before generating use cases."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR015", "description": "User Flow belongs to exactly one Story." },
+        { "rule_id": "BR016", "description": "One Story must support exactly one primary Flow." },
+        { "rule_id": "BR017", "description": "All User Flows must contain Mermaid source." },
+        { "rule_id": "BR018", "description": "Flow must be approved before Use Case generation." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC011",
+          "user_story": "As a Product Owner, I want to create a primary flow for a story with Mermaid source.",
+          "bdd": {
+            "given": "An approved story exists",
+            "and_preconditions": [],
+            "when": "The user creates a flow with flow_type=primary and mermaid_source",
+            "then": "Flow is created in draft status",
+            "and_postconditions": ["mermaid_source is stored"]
+          }
+        },
+        {
+          "scenario_id": "SC012",
+          "user_story": "As a Product Owner, I want to be prevented from creating a second primary flow.",
+          "bdd": {
+            "given": "A story already has a primary flow",
+            "and_preconditions": [],
+            "when": "The user creates another primary flow for the same story",
+            "then": "Creation is rejected",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T011",
+          "scenario_id": "SC011",
+          "setup": "Approved story exists",
+          "action": "POST /api/v1/flows",
+          "assertion": "201 Created",
+          "examples": [
+            { "input": { "story_id": "s-1", "flow_type": "primary", "title": "Main flow", "mermaid_source": "graph TD; A-->B" }, "expected": { "status": 201 } }
+          ]
+        },
+        {
+          "test_id": "T012",
+          "scenario_id": "SC012",
+          "setup": "Story already has primary flow",
+          "action": "POST /api/v1/flows",
+          "assertion": "409 Conflict",
+          "examples": [
+            { "input": { "story_id": "s-1", "flow_type": "primary", "title": "Dup", "mermaid_source": "graph TD; X-->Y" }, "expected": { "status": 409 } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F006",
+      "general_info": {
+        "name": "Use Case Management",
+        "overview": "CRUD for Use Cases derived from approved Flows."
+      },
+      "goal_and_context": {
+        "business_goal": "Capture structured behavioral specifications from flows.",
+        "user_problem": "Users need use cases with Given/When/Then format before generating requirements."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR019", "description": "Use Case belongs to exactly one User Flow." },
+        { "rule_id": "BR020", "description": "Requirement generation must not proceed from a non-approved Use Case." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC013",
+          "user_story": "As a Product Owner, I want to create a use case from an approved flow.",
+          "bdd": {
+            "given": "An approved flow exists",
+            "and_preconditions": [],
+            "when": "The user creates a use case with given/when/then and scenarios",
+            "then": "Use case is created in draft status",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T013",
+          "scenario_id": "SC013",
+          "setup": "Approved flow exists",
+          "action": "POST /api/v1/use-cases",
+          "assertion": "201 Created",
+          "examples": [
+            { "input": { "flow_id": "fl-1", "title": "Login UC", "given_text": "User on page", "when_text": "Submit", "then_text": "Logged in" }, "expected": { "status": 201 } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F007",
+      "general_info": {
+        "name": "Requirement Management",
+        "overview": "CRUD for Requirements derived from approved Use Cases."
+      },
+      "goal_and_context": {
+        "business_goal": "Define formal requirements traceable to use cases.",
+        "user_problem": "Users need explicit requirements with type classification before engineering work."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR021", "description": "Requirement must have at least one upstream traceable source." },
+        { "rule_id": "BR022", "description": "requirement_type must explicitly classify the requirement (functional, non_functional, etc.)." },
+        { "rule_id": "BR023", "description": "At least one approved Requirement must exist before downstream decomposition begins." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC014",
+          "user_story": "As a Product Owner, I want to create a requirement from an approved use case.",
+          "bdd": {
+            "given": "An approved use case exists",
+            "and_preconditions": [],
+            "when": "The user creates a requirement with type and text",
+            "then": "Requirement is created in draft status with upstream traceability",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T014",
+          "scenario_id": "SC014",
+          "setup": "Approved use case exists",
+          "action": "POST /api/v1/requirements",
+          "assertion": "201 Created",
+          "examples": [
+            { "input": { "primary_use_case_id": "uc-1", "title": "Validate email", "requirement_type": "functional" }, "expected": { "status": 201 } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F008",
+      "general_info": {
+        "name": "Approval Workflow",
+        "overview": "Universal approval/rejection workflow for all approvable entities."
+      },
+      "goal_and_context": {
+        "business_goal": "Gate downstream generation with explicit approval.",
+        "user_problem": "Users need to review and approve artifacts before they can be used downstream."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR024", "description": "Approval is version-bound. approved_version = current version." },
+        { "rule_id": "BR025", "description": "Content change invalidates prior approval automatically." },
+        { "rule_id": "BR026", "description": "Downstream generation allowed only from approved artifacts." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC015",
+          "user_story": "As a Product Owner, I want to approve an entity so it can be used downstream.",
+          "bdd": {
+            "given": "An entity exists",
+            "and_preconditions": [],
+            "when": "The user approves the entity",
+            "then": "Status becomes approved, approved_version is set",
+            "and_postconditions": []
+          }
+        },
+        {
+          "scenario_id": "SC016",
+          "user_story": "As a Product Owner, when I edit an approved entity, its approval should be invalidated.",
+          "bdd": {
+            "given": "An approved entity exists",
+            "and_preconditions": [],
+            "when": "The user edits the entity content",
+            "then": "Version increments, status changes to changed, approval is cleared",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T015",
+          "scenario_id": "SC015",
+          "setup": "Entity exists",
+          "action": "POST /api/v1/{entity_type}/{id}/approve",
+          "assertion": "200 OK, approved",
+          "examples": [
+            { "input": {}, "expected": { "status": 200, "status_field": "approved" } }
+          ]
+        },
+        {
+          "test_id": "T016",
+          "scenario_id": "SC016",
+          "setup": "Approved entity",
+          "action": "PUT /api/v1/{entity_type}/{id}",
+          "assertion": "200 OK, status changed, version incremented",
+          "examples": [
+            { "input": { "name": "Changed" }, "expected": { "status": 200, "status_field": "changed" } }
+          ]
+        }
+      ]
+    },
+    {
+      "feature_id": "F009",
+      "general_info": {
+        "name": "Specification Health Dashboard",
+        "overview": "Health checks for specification completeness at Product and Feature levels."
+      },
+      "goal_and_context": {
+        "business_goal": "Give users visibility into spec gaps and issues.",
+        "user_problem": "Users need to know which features lack stories, which stories lack flows, etc."
+      },
+      "actors_and_roles": {
+        "primary_user": "Product Owner",
+        "secondary_user": null,
+        "system_service": "Backend API"
+      },
+      "business_rules": [
+        { "rule_id": "BR027", "description": "Health checks detect: features without approved stories, stories without actors, stories without primary flows, approved flows without use cases, approved use cases without requirements, approved requirements without test designs, tasks without linked tests, tasks without context packages." }
+      ],
+      "acceptance_criteria": [
+        {
+          "scenario_id": "SC017",
+          "user_story": "As a Product Owner, I want to see a health summary of my product specification.",
+          "bdd": {
+            "given": "A product with features, stories, flows exists",
+            "and_preconditions": [],
+            "when": "The user requests the health dashboard",
+            "then": "A report is returned listing all spec gaps",
+            "and_postconditions": []
+          }
+        }
+      ],
+      "non_functional_requirements": [],
+      "test_cases": [
+        {
+          "test_id": "T017",
+          "scenario_id": "SC017",
+          "setup": "Product with incomplete spec",
+          "action": "GET /api/v1/products/{id}/health",
+          "assertion": "200 OK with health violations",
+          "examples": [
+            { "input": {}, "expected": { "status": 200 } }
+          ]
+        }
+      ]
+    }
+  ]
+}

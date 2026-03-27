@@ -1,0 +1,1 @@
+from repository.product.product_repository import ProductRepository
