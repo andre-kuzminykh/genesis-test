@@ -3,6 +3,8 @@
 ## Traceability
 Product: Telegram Product Engineer Bot
 """
+from __future__ import annotations
+
 from aiogram.types import Message
 
 from core.vocab import MSG_ERROR

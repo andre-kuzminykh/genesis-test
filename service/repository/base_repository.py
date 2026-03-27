@@ -4,6 +4,8 @@ Generic CRUD repository.
 ## Traceability
 Feature: F001-F009 — All features
 """
+from __future__ import annotations
+
 from typing import TypeVar, Generic, Type, Optional
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession

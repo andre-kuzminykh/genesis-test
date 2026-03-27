@@ -4,6 +4,8 @@
 Feature: F003
 Scenarios: SC006, SC007
 """
+from __future__ import annotations
+
 import httpx
 
 from core.config import config

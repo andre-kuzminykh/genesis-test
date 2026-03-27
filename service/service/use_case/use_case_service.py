@@ -9,6 +9,8 @@ Scenarios: SC013
 - UseCaseRepository
 - FlowRepository (for approval gate)
 """
+from __future__ import annotations
+
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 

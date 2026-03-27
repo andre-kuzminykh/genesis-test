@@ -8,6 +8,8 @@ Scenarios: SC011, SC012
 ## Dependencies
 - FlowRepository
 """
+from __future__ import annotations
+
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 

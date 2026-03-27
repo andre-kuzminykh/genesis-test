@@ -8,6 +8,8 @@ Scenarios: SC007, SC008
 ## Dependencies
 - ActorRepository, FeatureActorLinkRepository
 """
+from __future__ import annotations
+
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from repository.actor.actor_repository import ActorRepository, FeatureActorLinkRepository

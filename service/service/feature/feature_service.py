@@ -10,6 +10,8 @@ Scenarios: SC004, SC005, SC006
 - StoryRepository (for deletion check)
 - ProductRepository (for existence check)
 """
+from __future__ import annotations
+
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 

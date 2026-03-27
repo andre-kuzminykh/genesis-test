@@ -9,6 +9,8 @@ Scenarios: SC009, SC010
 - StoryRepository
 - FeatureActorLinkRepository (for actor-feature validation)
 """
+from __future__ import annotations
+
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 

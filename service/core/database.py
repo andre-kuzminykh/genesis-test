@@ -4,6 +4,8 @@ Database connection management.
 ## Traceability
 Feature: F001-F009 — All features
 """
+from __future__ import annotations
+
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from core.config import config
 
