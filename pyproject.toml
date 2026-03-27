@@ -1,0 +1,31 @@
+[project]
+name = "telegram-product-engineer-bot-tests"
+version = "0.1.0"
+description = "Specification-driven tests for Telegram Product Engineer Bot"
+requires-python = ">=3.11"
+dependencies = [
+    "pydantic>=2.0",
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "mvp1: MVP-1 scope tests",
+    "mvp2: MVP-2 scope tests",
+    "mvp3: MVP-3 scope tests",
+    "mvp4: MVP-4 scope tests",
+    "invariant: Domain invariant tests",
+    "traceability: Traceability model tests",
+    "workflow: Workflow and status transition tests",
+    "context_package: Context Package tests",
+    "generation: Generation run tests",
+    "change_management: Change management tests",
+    "build: Build center tests",
+    "export: Git export tests",
+    "health: Specification health check tests",
+]
