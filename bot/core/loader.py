@@ -9,8 +9,13 @@ from aiogram.enums import ParseMode
 
 from core.config import config
 
-bot = Bot(
-    token=config.BOT_TOKEN,
-    default=DefaultBotProperties(parse_mode=ParseMode.HTML),
-)
-dp = Dispatcher()
+
+def create_bot() -> Bot:
+    return Bot(
+        token=config.BOT_TOKEN,
+        default=DefaultBotProperties(parse_mode=ParseMode.HTML),
+    )
+
+
+def create_dispatcher() -> Dispatcher:
+    return Dispatcher()
