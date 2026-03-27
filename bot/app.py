@@ -3,6 +3,8 @@
 ## Traceability
 Product: Telegram Product Engineer Bot
 """
+from __future__ import annotations
+
 import asyncio
 
 from core.loader import create_bot, create_dispatcher

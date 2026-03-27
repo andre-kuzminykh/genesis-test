@@ -3,6 +3,8 @@
 ## Traceability
 Product: Telegram Product Engineer Bot
 """
+from __future__ import annotations
+
 
 # ── Commands ──────────────────────────────────────────────
 COMMANDS = {

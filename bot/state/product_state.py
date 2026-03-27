@@ -4,6 +4,8 @@
 Feature: F001 — Product Management
 Scenarios: SC001, SC002, SC003
 """
+from __future__ import annotations
+
 from aiogram.fsm.state import State, StatesGroup
 
 

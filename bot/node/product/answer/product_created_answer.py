@@ -4,6 +4,8 @@
 Feature: F001 — Product Management
 Scenarios: SC001
 """
+from __future__ import annotations
+
 from aiogram.types import Message
 
 from core.vocab import MSG_PRODUCT_CREATED

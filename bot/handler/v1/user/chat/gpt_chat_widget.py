@@ -8,6 +8,8 @@ Users can ask product-engineering questions in free text.
 ## Traceability
 Product: Telegram Product Engineer Bot
 """
+from __future__ import annotations
+
 from aiogram import Router, F
 from aiogram.filters import Command
 from aiogram.types import Message

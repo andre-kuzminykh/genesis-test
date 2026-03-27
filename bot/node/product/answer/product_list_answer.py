@@ -4,6 +4,8 @@
 Feature: F001 — Product Management
 Scenarios: SC002
 """
+from __future__ import annotations
+
 from aiogram.types import Message
 
 from core.vocab import MSG_PRODUCT_LIST_HEADER, MSG_EMPTY_LIST

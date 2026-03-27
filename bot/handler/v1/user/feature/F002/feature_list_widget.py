@@ -4,6 +4,8 @@
 Feature: F002 — Feature Management
 Scenarios: SC004
 """
+from __future__ import annotations
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message

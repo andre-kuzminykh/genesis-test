@@ -4,6 +4,8 @@
 Feature: F001 — Product Management
 Scenarios: SC003
 """
+from __future__ import annotations
+
 from aiogram import Router
 from aiogram.types import CallbackQuery
 from aiogram.fsm.context import FSMContext

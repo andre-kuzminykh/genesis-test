@@ -4,6 +4,8 @@
 Feature: F001 — Product Management
 Scenarios: SC002
 """
+from __future__ import annotations
+
 from aiogram import Router
 from aiogram.filters import Command
 from aiogram.types import Message

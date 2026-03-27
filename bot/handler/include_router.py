@@ -3,6 +3,8 @@
 ## Traceability
 Product: Telegram Product Engineer Bot
 """
+from __future__ import annotations
+
 from aiogram import Dispatcher
 
 from handler.v1.user.start_widget import router as start_router
