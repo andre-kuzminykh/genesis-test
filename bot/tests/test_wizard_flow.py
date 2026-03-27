@@ -618,3 +618,162 @@ def test_fsm_has_required_states():
     for name in ("waiting_for_name", "waiting_for_description",
                  "reviewing_summary", "reviewing_features"):
         assert any(name in s for s in states), f"Missing state: {name}"
+
+
+# ═══════════════════════════════════════════════════════════
+# Features keyboard — Назад + Далее
+# ═══════════════════════════════════════════════════════════
+
+
+def test_features_kb_has_back_button():
+    from handler.v1.user.wizard.main_widget import _features_kb
+
+    features = [{"id": "f1", "name": "F1", "status": "draft"}]
+    kb = _features_kb(features, "prod-1", page=1)
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert "◀️ Назад" in texts
+
+
+def test_features_kb_show_next_button():
+    from handler.v1.user.wizard.main_widget import _features_kb
+
+    features = [{"id": "f1", "name": "F1", "status": "draft"}]
+    kb = _features_kb(features, "prod-1", page=1, show_next=True)
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert "➡️ Далее" in texts
+    assert "◀️ Назад" in texts
+
+
+def test_features_kb_no_next_by_default():
+    from handler.v1.user.wizard.main_widget import _features_kb
+
+    features = [{"id": "f1", "name": "F1", "status": "draft"}]
+    kb = _features_kb(features, "prod-1", page=1, show_next=False)
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert "➡️ Далее" not in texts
+
+
+def test_features_kb_no_next_when_empty():
+    from handler.v1.user.wizard.main_widget import _features_kb
+
+    kb = _features_kb([], "prod-1", page=1, show_next=True)
+    texts = [btn.text for row in kb.inline_keyboard for btn in row]
+    assert "➡️ Далее" not in texts  # no next if no features
+
+
+# ═══════════════════════════════════════════════════════════
+# Next generates features with text list
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_next_shows_features_text_list():
+    """After pressing Next, features should be listed as numbered text."""
+    from handler.v1.user.wizard.main_widget import handle_wizard_next
+
+    cb = _make_callback("wizard_next")
+    state = _make_state(
+        data={"product_name": "MyProd", "product_summary": "Summary"},
+        current_state=ProductFSM.reviewing_summary.state,
+    )
+
+    with patch("handler.v1.user.wizard.main_widget._product_api") as p_api, \
+         patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
+         patch("handler.v1.user.wizard.main_widget._ai") as ai:
+        p_api.create = AsyncMock(return_value={"id": "prod-1", "name": "MyProd"})
+        ai.generate_features_json = AsyncMock(return_value=[
+            {"name": "Auth", "description": "User login"},
+            {"name": "Dashboard", "description": "Main view"},
+        ])
+        f_api.create = AsyncMock(side_effect=[
+            {"id": "f1", "name": "Auth"},
+            {"id": "f2", "name": "Dashboard"},
+        ])
+        await handle_wizard_next(cb, state)
+
+    # Check text contains numbered features
+    last_call = cb.message.edit_text.call_args_list[-1]
+    text = last_call[0][0]
+    assert "1." in text
+    assert "Auth" in text
+    assert "2." in text
+    assert "Dashboard" in text
+
+
+@pytest.mark.asyncio
+async def test_next_keeps_features_even_if_backend_fails():
+    """Features should be shown even if backend save fails."""
+    from handler.v1.user.wizard.main_widget import handle_wizard_next
+
+    cb = _make_callback("wizard_next")
+    state = _make_state(
+        data={"product_name": "MyProd", "product_summary": "Summary"},
+        current_state=ProductFSM.reviewing_summary.state,
+    )
+
+    with patch("handler.v1.user.wizard.main_widget._product_api") as p_api, \
+         patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
+         patch("handler.v1.user.wizard.main_widget._ai") as ai:
+        p_api.create = AsyncMock(return_value={"id": "prod-1", "name": "MyProd"})
+        ai.generate_features_json = AsyncMock(return_value=[
+            {"name": "Auth", "description": "Login"},
+        ])
+        f_api.create = AsyncMock(side_effect=Exception("DB error"))
+        await handle_wizard_next(cb, state)
+
+    # Features still shown in text even though backend save failed
+    last_call = cb.message.edit_text.call_args_list[-1]
+    text = last_call[0][0]
+    assert "Auth" in text
+    assert "1." in text
+
+
+# ═══════════════════════════════════════════════════════════
+# Dive into features (wizard_dive_features)
+# ═══════════════════════════════════════════════════════════
+
+
+@pytest.mark.asyncio
+async def test_dive_features_opens_first_feature():
+    from handler.v1.user.wizard.main_widget import handle_dive_features
+
+    cb = _make_callback("wizard_dive_features")
+    state = _make_state(data={
+        "product_id": "prod-1",
+        "features": [
+            {"id": "f1", "name": "Auth", "description": "Login"},
+            {"id": "f2", "name": "Dashboard", "description": "View"},
+        ],
+    })
+
+    with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
+         patch("handler.v1.user.wizard.main_widget._story_api") as s_api, \
+         patch("handler.v1.user.wizard.main_widget._ai") as ai:
+        f_api.get_by_id = AsyncMock(return_value={
+            "id": "f1", "name": "Auth", "description": "Login", "product_id": "prod-1",
+        })
+        s_api.get_all = AsyncMock(side_effect=[
+            [],  # no stories yet
+            [{"id": "s1", "title": "Login flow", "status": "draft"}],
+        ])
+        ai.generate_stories_json = AsyncMock(return_value=[
+            {"title": "Login flow", "want": "log in", "benefit": "access"},
+        ])
+        s_api.create = AsyncMock(return_value={"id": "s1"})
+        await handle_dive_features(cb, state)
+
+    ai.generate_stories_json.assert_awaited_once()
+    text = cb.message.edit_text.call_args_list[-1][0][0]
+    assert "Auth" in text
+
+
+@pytest.mark.asyncio
+async def test_dive_features_empty_shows_alert():
+    from handler.v1.user.wizard.main_widget import handle_dive_features
+
+    cb = _make_callback("wizard_dive_features")
+    state = _make_state(data={"features": []})
+
+    await handle_dive_features(cb, state)
+
+    cb.answer.assert_awaited_with("Нет фичей для проработки", show_alert=True)

@@ -93,8 +93,9 @@ def _products_kb(products: list[dict], page: int = 1) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-def _features_kb(features: list[dict], product_id: str, page: int = 1) -> InlineKeyboardMarkup:
-    """Paginated feature list."""
+def _features_kb(features: list[dict], product_id: str, page: int = 1,
+                  show_next: bool = False) -> InlineKeyboardMarkup:
+    """Paginated feature list with optional Далее button."""
     total = math.ceil(len(features) / PER_PAGE) or 1
     page = max(1, min(page, total))
     start = (page - 1) * PER_PAGE
@@ -110,10 +111,17 @@ def _features_kb(features: list[dict], product_id: str, page: int = 1) -> Inline
     nav = _page_row("features", page, total, parent_id=product_id)
     if nav:
         buttons.append(nav)
-    buttons.append([InlineKeyboardButton(
-        text="◀️ Назад к продуктам",
-        callback_data=MenuCB(action="products").pack(),
-    )])
+    bottom = []
+    bottom.append(InlineKeyboardButton(
+        text="◀️ Назад",
+        callback_data=ProductCB(id=product_id, action="view").pack(),
+    ))
+    if show_next and features:
+        bottom.append(InlineKeyboardButton(
+            text="➡️ Далее",
+            callback_data="wizard_dive_features",
+        ))
+    buttons.append(bottom)
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
@@ -251,9 +259,11 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB, state: FSM
             features = await _feature_api.get_all(product_id=parent_id)
         except Exception:
             features = []
+        text = "📋 <b>Фичи:</b>\n"
+        for i, feat in enumerate(features, 1):
+            text += f"\n{i}. <b>{feat['name']}</b>"
         await _edit_bot_msg(
-            callback,
-            "📋 <b>Фичи:</b>",
+            callback, text,
             reply_markup=_features_kb(features, parent_id, page=page),
         )
 
@@ -421,28 +431,109 @@ async def handle_wizard_next(callback: CallbackQuery, state: FSMContext) -> None
             await callback.answer()
             return
 
-        # 3. Save features to backend
+        # 3. Save features to backend (best-effort) and keep local list
         saved_features = []
         for fd in features_data:
+            feat_record = {
+                "id": "",
+                "name": fd["name"],
+                "description": fd.get("description", ""),
+                "status": "draft",
+            }
             try:
                 feat = await _feature_api.create({
                     "product_id": product_id,
                     "name": fd["name"],
                     "description": fd.get("description", ""),
                 })
-                saved_features.append(feat)
-            except Exception:
-                pass
+                feat_record["id"] = str(feat.get("id", ""))
+            except Exception as exc:
+                log.warning("Feature save failed: %s", exc)
+            saved_features.append(feat_record)
 
-        await state.update_data(features=saved_features)
+        await state.update_data(features=saved_features, product_id=product_id)
         await state.set_state(ProductFSM.reviewing_features)
 
         text = f"✅ Продукт <b>{data['product_name']}</b> создан!\n\n"
-        text += "📋 <b>Сгенерированные фичи:</b>"
+        text += "📋 <b>Сгенерированные фичи:</b>\n"
+        for i, f in enumerate(saved_features, 1):
+            text += f"\n{i}. <b>{f['name']}</b>"
+            if f.get("description"):
+                text += f"\n   {f['description'][:80]}"
 
         await _edit_bot_msg(
             callback, text,
-            reply_markup=_features_kb(saved_features, product_id, page=1),
+            reply_markup=_features_kb(saved_features, product_id, page=1, show_next=True),
+        )
+
+    await callback.answer()
+
+
+@router.callback_query(F.data == "wizard_dive_features")
+async def handle_dive_features(callback: CallbackQuery, state: FSMContext) -> None:
+    """Далее on features list — open first feature and auto-generate its stories."""
+    data = await state.get_data()
+    features = data.get("features", [])
+
+    if not features:
+        await callback.answer("Нет фичей для проработки", show_alert=True)
+        return
+
+    # Open first feature
+    first = features[0]
+    fid = first.get("id", "")
+    if fid:
+        # Simulate clicking the first feature
+        try:
+            feature = await _feature_api.get_by_id(fid)
+            stories = await _story_api.get_all(feature_id=fid)
+        except Exception:
+            feature = first
+            stories = []
+
+        if not stories:
+            await _edit_bot_msg(callback, f"🔹 <b>{first['name']}</b>\n\n⏳ Генерирую user stories...")
+            try:
+                stories_data = await _ai.generate_stories_json(
+                    first["name"], first.get("description", "")
+                )
+                for sd in stories_data:
+                    try:
+                        await _story_api.create({
+                            "product_id": data.get("product_id", ""),
+                            "feature_id": fid,
+                            "title": sd.get("title", "Story"),
+                            "want_text": sd.get("want", ""),
+                            "benefit_text": sd.get("benefit", ""),
+                        })
+                    except Exception:
+                        pass
+                stories = await _story_api.get_all(feature_id=fid)
+            except Exception as exc:
+                await _edit_bot_msg(callback, f"⚠️ Ошибка генерации stories: {exc}")
+                await callback.answer()
+                return
+
+        text = f"🔹 <b>{first['name']}</b>\n"
+        if first.get("description"):
+            text += f"{first['description'][:500]}\n"
+        text += "\n📖 <b>User Stories:</b>"
+
+        await _edit_bot_msg(
+            callback, text,
+            reply_markup=_stories_kb(stories, fid, page=1),
+        )
+    else:
+        # No backend ID — show feature info from FSM data
+        text = f"🔹 <b>{first['name']}</b>\n"
+        if first.get("description"):
+            text += f"{first['description'][:500]}\n"
+        text += "\n⚠️ Фича не сохранена в бэкенд. Проверьте подключение."
+
+        product_id = data.get("product_id", "")
+        await _edit_bot_msg(
+            callback, text,
+            reply_markup=_features_kb(features, product_id, page=1, show_next=True),
         )
 
     await callback.answer()
@@ -463,15 +554,16 @@ async def handle_product(callback: CallbackQuery, callback_data: ProductCB, stat
             await callback.answer(f"Ошибка: {exc}", show_alert=True)
             return
 
-        text = (
-            f"📦 <b>{product['name']}</b>\n"
-            f"Статус: {product.get('status', 'draft')}\n"
-        )
+        text = f"📦 <b>{product['name']}</b>\n"
         if product.get("goal"):
-            text += f"\n{product['goal'][:1500]}"
+            text += f"\n{product['goal'][:1000]}"
 
         if features:
-            text += "\n\n📋 <b>Фичи:</b>"
+            text += "\n\n📋 <b>Фичи:</b>\n"
+            for i, feat in enumerate(features, 1):
+                text += f"\n{i}. <b>{feat['name']}</b>"
+        else:
+            text += "\n\nФичей пока нет."
 
         await _edit_bot_msg(
             callback, text,
@@ -500,8 +592,11 @@ async def handle_product(callback: CallbackQuery, callback_data: ProductCB, stat
             await callback.answer()
             return
 
+        text = "📋 <b>Фичи:</b>\n"
+        for i, feat in enumerate(features, 1):
+            text += f"\n{i}. <b>{feat['name']}</b>"
         await _edit_bot_msg(
-            callback, "📋 <b>Фичи:</b>",
+            callback, text,
             reply_markup=_features_kb(features, pid, page=1),
         )
 
@@ -596,8 +691,11 @@ async def handle_feature(callback: CallbackQuery, callback_data: FeatureCB, stat
             await callback.answer("Ошибка", show_alert=True)
             return
 
+        text = "📋 <b>Фичи:</b>\n"
+        for i, feat in enumerate(features, 1):
+            text += f"\n{i}. <b>{feat['name']}</b>"
         await _edit_bot_msg(
-            callback, "📋 <b>Фичи:</b>",
+            callback, text,
             reply_markup=_features_kb(features, pid, page=1),
         )
 
