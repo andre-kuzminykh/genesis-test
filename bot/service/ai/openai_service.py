@@ -5,6 +5,10 @@ Product: Telegram Product Engineer Bot
 """
 from __future__ import annotations
 
+import json
+import tempfile
+import os
+
 from openai import AsyncOpenAI
 
 from core.config import config
@@ -14,7 +18,6 @@ SYSTEM_PROMPT = (
     "You help users design products, write features, user stories, "
     "acceptance criteria, flows, use cases, and requirements.\n"
     "Be concise — Telegram messages have a 4096-char limit.\n"
-    "Format with Markdown where appropriate.\n"
     "Answer in the user's language."
 )
 
@@ -33,7 +36,6 @@ class OpenAIService:
         history: list[dict] | None = None,
         system_prompt: str | None = None,
     ) -> str:
-        """Send a message to GPT and return the assistant reply."""
         messages = [
             {"role": "system", "content": system_prompt or SYSTEM_PROMPT},
         ]
@@ -49,36 +51,81 @@ class OpenAIService:
         )
         return response.choices[0].message.content or ""
 
-    async def generate_product_spec(self, product_name: str, description: str) -> str:
-        """Generate goal, value proposition, constraints for a product."""
+    async def transcribe_voice(self, file_path: str) -> str:
+        """Transcribe a voice/audio file using Whisper."""
+        with open(file_path, "rb") as f:
+            transcript = await self._client.audio.transcriptions.create(
+                model="whisper-1",
+                file=f,
+            )
+        return transcript.text
+
+    async def generate_product_summary(self, name: str, description: str) -> str:
         prompt = (
-            f"Product name: {product_name}\n"
+            f"Product: {name}\n"
             f"Description: {description}\n\n"
-            "Generate a short product specification with:\n"
-            "1. Goal (1-2 sentences)\n"
-            "2. Value proposition (1-2 sentences)\n"
-            "3. Target users (bullet list)\n"
-            "4. Key constraints (bullet list)\n"
-            "Be concise."
+            "Write a concise product summary with:\n"
+            "• Goal (1-2 sentences)\n"
+            "• Value proposition (1-2 sentences)\n"
+            "• Target users\n"
+            "• Key constraints\n"
+            "Be brief, structured."
         )
         return await self.chat(prompt)
 
-    async def generate_features(self, product_name: str, goal: str) -> str:
-        """Suggest features for a product."""
+    async def generate_features_json(self, product_name: str, summary: str) -> list[dict]:
+        """Return list of features as structured data."""
         prompt = (
             f"Product: {product_name}\n"
-            f"Goal: {goal}\n\n"
-            "Suggest 5-7 features as a numbered list. "
-            "Each feature: short name + one-sentence description."
+            f"Summary: {summary}\n\n"
+            "Generate 5-7 features. Return ONLY valid JSON array:\n"
+            '[{"name": "Feature Name", "description": "One sentence description"}]\n'
+            "No markdown, no explanation — pure JSON array only."
         )
-        return await self.chat(prompt)
+        raw = await self.chat(prompt)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
 
-    async def generate_user_stories(self, feature_name: str, actor: str) -> str:
-        """Generate user stories for a feature."""
+    async def generate_stories_json(self, feature_name: str, feature_desc: str) -> list[dict]:
+        """Return user stories as structured data."""
         prompt = (
             f"Feature: {feature_name}\n"
-            f"Actor: {actor}\n\n"
-            "Write 3-5 user stories in format:\n"
-            "As a {actor}, I want {action} so that {benefit}."
+            f"Description: {feature_desc}\n\n"
+            "Generate 3-5 user stories. Return ONLY valid JSON array:\n"
+            '[{"title": "Short title", "actor": "User", '
+            '"want": "what they want", "benefit": "why"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        raw = await self.chat(prompt)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+
+    async def generate_flows_json(self, story_title: str) -> list[dict]:
+        """Return flows as structured data."""
+        prompt = (
+            f"User Story: {story_title}\n\n"
+            "Generate 1-3 user flows (primary + alternatives). "
+            "Return ONLY valid JSON array:\n"
+            '[{"title": "Flow title", "flow_type": "primary", '
+            '"description": "Brief description", '
+            '"mermaid_source": "graph TD\\n    A[Start] --> B[Step] --> C[End]"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        raw = await self.chat(prompt)
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+        return json.loads(raw)
+
+    async def edit_text(self, original: str, user_instruction: str) -> str:
+        """Apply user's edit instruction to existing text."""
+        prompt = (
+            f"Original text:\n{original}\n\n"
+            f"User's edit instruction: {user_instruction}\n\n"
+            "Return the corrected/updated text. Keep the same structure."
         )
         return await self.chat(prompt)
