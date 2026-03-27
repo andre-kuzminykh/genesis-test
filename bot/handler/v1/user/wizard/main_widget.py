@@ -238,9 +238,18 @@ async def _send_or_edit(message: Message, state: FSMContext, text: str,
 async def _edit_cb_msg(callback: CallbackQuery, text: str,
                        reply_markup: InlineKeyboardMarkup = None) -> None:
     try:
-        await callback.message.edit_text(text, reply_markup=reply_markup)
-    except Exception:
-        pass
+        await callback.message.edit_text(
+            text, reply_markup=reply_markup, parse_mode="HTML",
+        )
+    except Exception as exc:
+        log.warning("edit_cb_msg failed: %s", exc)
+        # If edit fails (e.g. text unchanged), try sending new message
+        try:
+            await callback.message.answer(
+                text, reply_markup=reply_markup, parse_mode="HTML",
+            )
+        except Exception:
+            pass
 
 
 # ═══════════════════════════════════════════════════════════
@@ -290,7 +299,8 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
             products = await _product_api.get_all()
         except Exception:
             products = []
-        await _edit_cb_msg(callback, "📦 <b>Ваши продукты:</b>",
+        total = math.ceil(len(products) / PER_PAGE) or 1
+        await _edit_cb_msg(callback, f"📦 <b>Ваши продукты</b> ({page}/{total}):",
                            reply_markup=_products_kb(products, page=page))
 
     elif entity == "features":
@@ -298,7 +308,8 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
             features = await _feature_api.get_all(product_id=pid)
         except Exception:
             features = []
-        text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(features)
+        total = math.ceil(len(features) / PER_PAGE) or 1
+        text = f"📋 <b>Фичи</b> ({page}/{total}):\n\n" + _format_features_text(features)
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_features_kb(features, pid, page=page))
 
@@ -307,7 +318,9 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
             stories = await _story_api.get_all(feature_id=pid)
         except Exception:
             stories = []
-        await _edit_cb_msg(callback, "📖 <b>User Stories:</b>",
+        total = math.ceil(len(stories) / PER_PAGE) or 1
+        text = f"📖 <b>User Stories</b> ({page}/{total}):"
+        await _edit_cb_msg(callback, text,
                            reply_markup=_saved_stories_kb(stories, pid, page=page))
 
     await callback.answer()
@@ -572,6 +585,7 @@ async def handle_features_edit(message: Message, state: FSMContext,
 @router.callback_query(F.data == "wizard_save_features")
 async def handle_save_features(callback: CallbackQuery,
                                state: FSMContext) -> None:
+    """Save features to backend silently, then drill into first feature."""
     data = await state.get_data()
     draft = data.get("draft_features", [])
     product_id = data.get("product_id", "")
@@ -580,7 +594,7 @@ async def handle_save_features(callback: CallbackQuery,
         await callback.answer("Нет фичей для сохранения", show_alert=True)
         return
 
-    await _edit_cb_msg(callback, "⏳ Сохраняю фичи...")
+    await _edit_cb_msg(callback, "⏳ Сохраняю...")
 
     saved = []
     for fd in draft:
@@ -598,13 +612,60 @@ async def handle_save_features(callback: CallbackQuery,
                           "status": "draft"})
 
     await state.update_data(saved_features=saved)
-    await state.clear()
 
-    text = "✅ <b>Фичи сохранены!</b>\n\nВыберите фичу для детальной проработки:"
-    await _edit_cb_msg(
-        callback, text,
-        reply_markup=_saved_features_kb(saved, product_id, page=1),
-    )
+    # Auto-drill into first feature with an id
+    first = next((f for f in saved if f.get("id")), None)
+    if first:
+        fid = str(first["id"])
+        await _edit_cb_msg(callback,
+                           f"🔹 <b>{first['name']}</b>\n\n⏳ Генерирую user stories...")
+        try:
+            stories_data = await _ai.generate_stories_json(
+                first["name"], first.get("description", "")
+            )
+        except Exception as exc:
+            # Fallback to features buttons
+            await state.clear()
+            await _edit_cb_msg(callback,
+                               f"⚠️ Ошибка генерации stories: {exc}",
+                               reply_markup=_saved_features_kb(saved, product_id, page=1))
+            await callback.answer()
+            return
+
+        draft_stories = [
+            {"title": sd.get("title", "Story"),
+             "want": sd.get("want", ""),
+             "benefit": sd.get("benefit", "")}
+            for sd in stories_data
+        ]
+        await state.update_data(
+            draft_stories=draft_stories,
+            current_feature_id=fid,
+            current_feature_product_id=product_id,
+        )
+        await state.set_state(ProductFSM.reviewing_stories)
+
+        text = (
+            f"🔹 <b>{first['name']}</b>\n\n"
+            "📖 <b>User Stories:</b>\n"
+            "<i>Можете отредактировать текстом/голосом, затем нажмите Далее</i>\n\n"
+            + _format_stories_text(draft_stories)
+        )
+        await _edit_cb_msg(
+            callback, text,
+            reply_markup=_review_kb(
+                back_cb=FeatureCB(id=fid, action="back").pack(),
+                next_cb="wizard_save_stories",
+                back_text="Назад",
+            ),
+        )
+    else:
+        # All saves failed — show features list
+        await state.clear()
+        text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(saved)
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_features_kb(saved, product_id, page=1))
+
     await callback.answer()
 
 
@@ -814,6 +875,7 @@ async def handle_stories_edit(message: Message, state: FSMContext,
 @router.callback_query(F.data == "wizard_save_stories")
 async def handle_save_stories(callback: CallbackQuery,
                               state: FSMContext) -> None:
+    """Save stories to backend silently, then go to next feature or features list."""
     data = await state.get_data()
     draft = data.get("draft_stories", [])
     fid = data.get("current_feature_id", "")
@@ -823,31 +885,89 @@ async def handle_save_stories(callback: CallbackQuery,
         await callback.answer("Нет stories для сохранения", show_alert=True)
         return
 
-    await _edit_cb_msg(callback, "⏳ Сохраняю stories...")
+    await _edit_cb_msg(callback, "⏳ Сохраняю...")
 
-    saved = []
     for sd in draft:
         try:
-            story = await _story_api.create({
+            await _story_api.create({
                 "product_id": pid,
                 "feature_id": fid,
                 "title": sd.get("title", "Story"),
                 "want_text": sd.get("want", ""),
                 "benefit_text": sd.get("benefit", ""),
             })
-            saved.append(story)
         except Exception as exc:
             log.warning("Story save failed: %s", exc)
-            saved.append({"id": "", "title": sd.get("title", ""),
-                          "status": "draft"})
 
-    await state.clear()
+    # Find next feature without stories
+    try:
+        all_features = await _feature_api.get_all(product_id=pid)
+    except Exception:
+        all_features = []
 
-    text = "✅ <b>Stories сохранены!</b>\n\nВыберите story для просмотра:"
-    await _edit_cb_msg(
-        callback, text,
-        reply_markup=_saved_stories_kb(saved, fid, page=1),
-    )
+    next_feature = None
+    for feat in all_features:
+        feat_id = str(feat.get("id", ""))
+        if feat_id and feat_id != fid:
+            try:
+                stories = await _story_api.get_all(feature_id=feat_id)
+                if not stories:
+                    next_feature = feat
+                    break
+            except Exception:
+                next_feature = feat
+                break
+
+    if next_feature:
+        # Auto-drill into next feature
+        nfid = str(next_feature["id"])
+        await _edit_cb_msg(callback,
+                           f"🔹 <b>{next_feature['name']}</b>\n\n⏳ Генерирую user stories...")
+        try:
+            stories_data = await _ai.generate_stories_json(
+                next_feature["name"], next_feature.get("description", "")
+            )
+        except Exception as exc:
+            await state.clear()
+            await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}",
+                               reply_markup=_saved_features_kb(all_features, pid, page=1))
+            await callback.answer()
+            return
+
+        draft_stories = [
+            {"title": sd.get("title", "Story"),
+             "want": sd.get("want", ""),
+             "benefit": sd.get("benefit", "")}
+            for sd in stories_data
+        ]
+        await state.update_data(
+            draft_stories=draft_stories,
+            current_feature_id=nfid,
+            current_feature_product_id=pid,
+        )
+        await state.set_state(ProductFSM.reviewing_stories)
+
+        text = (
+            f"🔹 <b>{next_feature['name']}</b>\n\n"
+            "📖 <b>User Stories:</b>\n"
+            "<i>Можете отредактировать текстом/голосом, затем нажмите Далее</i>\n\n"
+            + _format_stories_text(draft_stories)
+        )
+        await _edit_cb_msg(
+            callback, text,
+            reply_markup=_review_kb(
+                back_cb=FeatureCB(id=nfid, action="back").pack(),
+                next_cb="wizard_save_stories",
+                back_text="Назад",
+            ),
+        )
+    else:
+        # All features done — go to features list
+        await state.clear()
+        text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(all_features)
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_features_kb(all_features, pid, page=1))
+
     await callback.answer()
 
 
