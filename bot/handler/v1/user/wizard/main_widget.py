@@ -175,6 +175,58 @@ def _saved_stories_kb(stories: list[dict], feature_id: str,
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _saved_flows_kb(flows: list[dict], story_id: str,
+                    page: int = 1) -> InlineKeyboardMarkup:
+    """Paginated flow BUTTONS."""
+    total = math.ceil(len(flows) / PER_PAGE) or 1
+    page = max(1, min(page, total))
+    start = (page - 1) * PER_PAGE
+    subset = flows[start:start + PER_PAGE]
+
+    rows = []
+    for f in subset:
+        icon = "✅" if f.get("status") == "approved" else "🔄"
+        ft = f.get("flow_type", "primary")
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {f.get('title', 'Flow')[:35]} ({ft})",
+            callback_data=FlowCB(id=str(f["id"]), action="view").pack(),
+        )])
+    nav = _page_row("flows", page, total, parent_id=story_id)
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(
+        text="◀️ Назад к stories",
+        callback_data=StoryCB(id=story_id, action="view").pack(),
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def _saved_use_cases_kb(use_cases: list[dict], story_id: str,
+                        page: int = 1) -> InlineKeyboardMarkup:
+    """Paginated use case BUTTONS."""
+    total = math.ceil(len(use_cases) / PER_PAGE) or 1
+    page = max(1, min(page, total))
+    start = (page - 1) * PER_PAGE
+    subset = use_cases[start:start + PER_PAGE]
+
+    rows = []
+    for u in subset:
+        icon = "✅" if u.get("status") == "approved" else "📋"
+        rt = u.get("req_type", "functional")[:5]
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {u.get('title', 'UC')[:35]} [{rt}]",
+            callback_data=UseCaseCB(id=str(u["id"]), action="view").pack(),
+        )])
+    nav = _page_row("use_cases", page, total, parent_id=story_id)
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(
+        text="◀️ Назад к flows",
+        callback_data=StoryCB(id=story_id, action="flows").pack(),
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _format_features_text(features: list[dict]) -> str:
     """Format features as numbered text list with full descriptions."""
     lines = []
@@ -354,6 +406,26 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         text = f"📖 <b>User Stories</b> ({page}/{total}):"
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_stories_kb(stories, pid, page=page))
+
+    elif entity == "flows":
+        try:
+            flows = await _flow_api.get_all(story_id=pid)
+        except Exception:
+            flows = []
+        total = math.ceil(len(flows) / PER_PAGE) or 1
+        text = f"🔄 <b>User Flows</b> ({page}/{total}):"
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_flows_kb(flows, pid, page=page))
+
+    elif entity == "use_cases":
+        try:
+            ucs = await _use_case_api.get_all(story_id=pid)
+        except Exception:
+            ucs = []
+        total = math.ceil(len(ucs) / PER_PAGE) or 1
+        text = f"📋 <b>Use Cases</b> ({page}/{total}):"
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_use_cases_kb(ucs, pid, page=page))
 
     await callback.answer()
 
@@ -1246,19 +1318,136 @@ async def handle_story(callback: CallbackQuery, callback_data: StoryCB,
             await callback.answer(f"Ошибка: {exc}", show_alert=True)
             return
 
-        text = f"📖 <b>{story['title']}</b>\n\n"
-        if story.get("want_text"):
-            text += f"Я хочу: {story['want_text']}\n"
-        if story.get("benefit_text"):
-            text += f"Чтобы: {story['benefit_text']}\n"
-        text += f"\nСтатус: {story.get('status', 'draft')}"
+        # Check if flows already saved
+        try:
+            existing_flows = await _flow_api.get_all(story_id=sid)
+        except Exception:
+            existing_flows = []
+
+        if existing_flows:
+            text = (
+                f"📖 <b>{story['title']}</b>\n\n"
+                "🔄 <b>User Flows:</b>"
+            )
+            await _edit_cb_msg(callback, text,
+                               reply_markup=_saved_flows_kb(existing_flows, sid, page=1))
+        else:
+            text = f"📖 <b>{story['title']}</b>\n\n"
+            if story.get("want_text"):
+                text += f"Я хочу: {story['want_text']}\n"
+            if story.get("benefit_text"):
+                text += f"Чтобы: {story['benefit_text']}\n"
+            text += f"\nСтатус: {story.get('status', 'draft')}"
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="◀️ Назад к stories",
+                    callback_data=FeatureCB(
+                        id=story.get("feature_id", ""), action="view"
+                    ).pack(),
+                )],
+            ])
+            await _edit_cb_msg(callback, text, reply_markup=kb)
+
+    elif callback_data.action == "flows":
+        # Show flows list for this story
+        try:
+            flows = await _flow_api.get_all(story_id=sid)
+        except Exception:
+            flows = []
+        text = "🔄 <b>User Flows:</b>"
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_flows_kb(flows, sid, page=1))
+
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════
+# Flow view
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(FlowCB.filter())
+async def handle_flow(callback: CallbackQuery, callback_data: FlowCB,
+                      state: FSMContext) -> None:
+    fid = callback_data.id
+
+    if callback_data.action == "view":
+        try:
+            flow = await _flow_api.get_by_id(fid)
+        except Exception as exc:
+            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            return
+
+        sid = flow.get("story_id", "")
+
+        # Check if use cases exist for this story
+        try:
+            existing_ucs = await _use_case_api.get_all(story_id=sid)
+        except Exception:
+            existing_ucs = []
+
+        if existing_ucs:
+            text = (
+                f"🔄 <b>{flow.get('title', 'Flow')}</b> "
+                f"({flow.get('flow_type', 'primary')})\n\n"
+                "📋 <b>Use Cases:</b>"
+            )
+            await _edit_cb_msg(callback, text,
+                               reply_markup=_saved_use_cases_kb(existing_ucs, sid, page=1))
+        else:
+            text = (
+                f"🔄 <b>{flow.get('title', 'Flow')}</b> "
+                f"({flow.get('flow_type', 'primary')})\n\n"
+            )
+            if flow.get("description"):
+                text += f"{flow['description']}\n"
+            text += f"\nСтатус: {flow.get('status', 'draft')}"
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="◀️ Назад к flows",
+                    callback_data=StoryCB(id=sid, action="flows").pack(),
+                )],
+            ])
+            await _edit_cb_msg(callback, text, reply_markup=kb)
+
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════
+# Use Case view
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(UseCaseCB.filter())
+async def handle_use_case(callback: CallbackQuery, callback_data: UseCaseCB,
+                          state: FSMContext) -> None:
+    uid = callback_data.id
+
+    if callback_data.action == "view":
+        try:
+            uc = await _use_case_api.get_by_id(uid)
+        except Exception as exc:
+            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            return
+
+        sid = uc.get("story_id", "")
+        text = f"📋 <b>{uc.get('title', 'UC')}</b> [{uc.get('req_type', 'functional')}]\n\n"
+        if uc.get("goal"):
+            text += f"<b>Цель:</b> {uc['goal']}\n\n"
+        if uc.get("given_text"):
+            text += f"<b>Given:</b> {uc['given_text']}\n"
+        if uc.get("when_text"):
+            text += f"<b>When:</b> {uc['when_text']}\n"
+        if uc.get("then_text"):
+            text += f"<b>Then:</b> {uc['then_text']}\n"
+        text += f"\nСтатус: {uc.get('status', 'draft')}"
 
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
-                text="◀️ Назад к stories",
-                callback_data=FeatureCB(
-                    id=story.get("feature_id", ""), action="view"
-                ).pack(),
+                text="◀️ Назад к use cases",
+                callback_data=StoryCB(id=sid, action="flows").pack(),
             )],
         ])
         await _edit_cb_msg(callback, text, reply_markup=kb)
