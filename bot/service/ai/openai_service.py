@@ -112,11 +112,12 @@ class OpenAIService:
                                   feature_desc: str) -> list[dict]:
         prompt = (
             f"Feature: {feature_name}\nDescription: {feature_desc}\n\n"
-            "Generate 2-5 user roles (actors) who interact with this feature.\n"
-            "Include different types: end user, admin, system, etc.\n"
+            "Generate 2-5 human user roles who use this feature.\n"
+            "Only real people who interact with the system — "
+            "NO systems, services, APIs or external integrations.\n"
+            "Examples: end user, admin, manager, moderator, support agent.\n"
             "Return ONLY valid JSON array:\n"
-            '[{"name": "Role Name", "description": "Who this role is", '
-            '"role_type": "end_user|admin|system|external"}]\n'
+            '[{"name": "Role Name", "description": "Who this person is"}]\n'
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))
@@ -126,9 +127,9 @@ class OpenAIService:
         prompt = (
             f"Current roles:\n{current_list}\n\n"
             f"User's instruction: {user_instruction}\n\n"
+            "Only human user roles — no systems or services.\n"
             "Return ONLY a valid JSON array:\n"
-            '[{"name": "Role Name", "description": "Description", '
-            '"role_type": "end_user|admin|system|external"}]\n'
+            '[{"name": "Role Name", "description": "Who this person is"}]\n'
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))

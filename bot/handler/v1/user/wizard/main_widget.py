@@ -193,9 +193,8 @@ def _saved_roles_kb(roles: list[dict], feature_id: str,
     rows = []
     for r in subset:
         icon = "✅" if r.get("status") == "approved" else "👤"
-        rt = r.get("role_type", "end_user")
         rows.append([InlineKeyboardButton(
-            text=f"{icon} {r.get('name', 'Role')[:35]} ({rt})",
+            text=f"{icon} {r.get('name', 'Role')[:40]}",
             callback_data=RoleCB(id=str(r["id"]), action="view").pack(),
         )])
     nav = _page_row("roles", page, total, parent_id=feature_id)
@@ -274,8 +273,7 @@ def _format_roles_text(roles: list[dict]) -> str:
     """Format roles as numbered text list."""
     lines = []
     for i, r in enumerate(roles, 1):
-        rt = r.get("role_type", "end_user")
-        lines.append(f"{i}. <b>{r.get('name', 'Role')}</b> ({rt})")
+        lines.append(f"{i}. <b>{r.get('name', 'Role')}</b>")
         if r.get("description"):
             lines.append(f"   {r['description']}")
         lines.append("")
@@ -802,8 +800,7 @@ async def _start_feature_roles(callback: CallbackQuery,
         return
 
     draft = [{"name": r.get("name", "Role"),
-              "description": r.get("description", ""),
-              "role_type": r.get("role_type", "end_user")}
+              "description": r.get("description", "")}
              for r in roles_data]
     await state.update_data(draft_roles=draft)
     await state.set_state(ProductFSM.reviewing_roles)
@@ -1062,8 +1059,7 @@ async def handle_roles_edit(message: Message, state: FSMContext,
     await _send_or_edit(message, state, "⏳ Применяю правки к ролям...")
 
     current_text = "\n".join(
-        f"{i}. {r['name']} ({r.get('role_type', 'end_user')}): "
-        f"{r.get('description', '')}"
+        f"{i}. {r['name']}: {r.get('description', '')}"
         for i, r in enumerate(draft, 1)
     )
 
@@ -1115,7 +1111,6 @@ async def handle_save_roles(callback: CallbackQuery,
                 "product_id": pid,
                 "name": rd.get("name", "Role"),
                 "description": rd.get("description", ""),
-                "role_type": rd.get("role_type", "end_user"),
             })
             saved.append(actor)
             # Link actor to feature
@@ -1131,7 +1126,6 @@ async def handle_save_roles(callback: CallbackQuery,
             log.warning("Actor save failed: %s", exc)
             saved.append({"id": "", "name": rd.get("name", "Role"),
                           "description": rd.get("description", ""),
-                          "role_type": rd.get("role_type", "end_user"),
                           "status": "draft"})
 
     await state.update_data(saved_roles=saved)
@@ -1296,8 +1290,7 @@ async def handle_feature(callback: CallbackQuery, callback_data: FeatureCB,
                 return
 
             draft_roles = [{"name": r.get("name", "Role"),
-                            "description": r.get("description", ""),
-                            "role_type": r.get("role_type", "end_user")}
+                            "description": r.get("description", "")}
                            for r in roles_data]
             await state.update_data(draft_roles=draft_roles)
             await state.set_state(ProductFSM.reviewing_roles)
@@ -1744,17 +1737,13 @@ async def handle_role(callback: CallbackQuery, callback_data: RoleCB,
 
         if stories:
             text = (
-                f"👤 <b>{actor.get('name', 'Role')}</b> "
-                f"({actor.get('role_type', 'end_user')})\n\n"
+                f"👤 <b>{actor.get('name', 'Role')}</b>\n\n"
                 "📖 <b>User Stories:</b>"
             )
             await _edit_cb_msg(callback, text,
                                reply_markup=_saved_stories_kb(stories, feature_id, page=1))
         else:
-            text = (
-                f"👤 <b>{actor.get('name', 'Role')}</b> "
-                f"({actor.get('role_type', 'end_user')})\n\n"
-            )
+            text = f"👤 <b>{actor.get('name', 'Role')}</b>\n\n"
             if actor.get("description"):
                 text += f"{actor['description']}\n"
             text += f"\nСтатус: {actor.get('status', 'draft')}"
