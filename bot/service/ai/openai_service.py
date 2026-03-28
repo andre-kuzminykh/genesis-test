@@ -170,14 +170,17 @@ class OpenAIService:
             f"User Story: {story_title}\n"
             f"Want: {story_want}\n"
             f"Actors/Roles: {roles}\n\n"
-            "Generate 1-3 user flows (primary + alternatives).\n"
-            "For each flow generate a Mermaid sequence diagram showing "
-            "interactions between actors (roles) and systems.\n"
-            "Return ONLY valid JSON array:\n"
+            "Generate exactly ONE comprehensive user flow that covers the "
+            "primary scenario and all alternative/exception scenarios.\n"
+            "Generate a Mermaid sequence diagram showing "
+            "interactions between actors (roles) and systems. "
+            "Include alt/opt blocks for alternative and exception paths.\n"
+            "Return ONLY valid JSON array with exactly 1 element:\n"
             '[{"title": "Flow title", "flow_type": "primary", '
-            '"description": "Step-by-step flow description", '
+            '"description": "Step-by-step flow description covering all scenarios", '
             '"mermaid_source": "sequenceDiagram\\n    Actor->>System: action\\n    ..."}]\n'
             "IMPORTANT: mermaid_source must be valid Mermaid sequenceDiagram syntax.\n"
+            "Keep the mermaid diagram concise (under 30 lines).\n"
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))

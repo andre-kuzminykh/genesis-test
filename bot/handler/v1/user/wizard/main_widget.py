@@ -233,9 +233,10 @@ def _saved_flows_kb(flows: list[dict], story_id: str,
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def _saved_use_cases_kb(use_cases: list[dict], story_id: str,
+def _saved_use_cases_kb(use_cases: list[dict], flow_id: str,
+                        story_id: str = "",
                         page: int = 1) -> InlineKeyboardMarkup:
-    """Paginated use case BUTTONS."""
+    """Paginated use case BUTTONS. Uses flow_id for pagination filter."""
     total = math.ceil(len(use_cases) / PER_PAGE) or 1
     page = max(1, min(page, total))
     start = (page - 1) * PER_PAGE
@@ -248,12 +249,15 @@ def _saved_use_cases_kb(use_cases: list[dict], story_id: str,
             text=f"{icon} {u.get('title', 'UC')[:40]}",
             callback_data=UseCaseCB(id=str(u["id"]), action="view").pack(),
         )])
-    nav = _page_row("use_cases", page, total, parent_id=story_id)
+    nav = _page_row("use_cases", page, total, parent_id=flow_id)
     if nav:
         rows.append(nav)
+    # Back to story's flows list
+    back_cb = (StoryCB(id=story_id, action="flows").pack()
+               if story_id else FlowCB(id=flow_id, action="view").pack())
     rows.append([InlineKeyboardButton(
         text="◀️ Назад к flows",
-        callback_data=StoryCB(id=story_id, action="flows").pack(),
+        callback_data=back_cb,
     )])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -302,7 +306,10 @@ def _format_flows_text(flows: list[dict]) -> str:
         if f.get("description"):
             lines.append(f"   {f['description']}")
         if f.get("mermaid_source"):
-            lines.append(f"\n<pre>{f['mermaid_source']}</pre>")
+            mermaid = f["mermaid_source"]
+            if len(mermaid) > 500:
+                mermaid = mermaid[:500] + "\n... (truncated)"
+            lines.append(f"\n<pre>{mermaid}</pre>")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -357,6 +364,9 @@ async def _delete_user_msg(message: Message) -> None:
 async def _send_or_edit(message: Message, state: FSMContext, text: str,
                         reply_markup: InlineKeyboardMarkup = None) -> None:
     """Edit tracked bot message or send new one."""
+    # Telegram limit is 4096 chars; truncate to stay safe
+    if len(text) > 4000:
+        text = text[:3990] + "\n…(обрезано)"
     data = await state.get_data()
     bot_msg_id = data.get("bot_msg_id")
 
@@ -377,6 +387,9 @@ async def _send_or_edit(message: Message, state: FSMContext, text: str,
 
 async def _edit_cb_msg(callback: CallbackQuery, text: str,
                        reply_markup: InlineKeyboardMarkup = None) -> None:
+    # Telegram limit is 4096 chars; truncate to stay safe
+    if len(text) > 4000:
+        text = text[:3990] + "\n…(обрезано)"
     try:
         await callback.message.edit_text(
             text, reply_markup=reply_markup, parse_mode="HTML",
@@ -496,15 +509,23 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
                            reply_markup=_saved_flows_kb(flows, pid, page=page))
 
     elif entity == "use_cases":
+        flow_id = pid  # parent_id is flow_id for use cases
         try:
-            ucs = await _use_case_api.get_all(story_id=pid)
+            ucs = await _use_case_api.get_all(flow_id=flow_id)
         except Exception:
             ucs = []
+        # Resolve story_id for back navigation
+        try:
+            flow_obj = await _flow_api.get_by_id(flow_id)
+            uc_story_id = flow_obj.get("story_id", "")
+        except Exception:
+            uc_story_id = ""
         total = math.ceil(len(ucs) / PER_PAGE) or 1
         page = max(1, min(raw_page, total))
         text = f"📋 <b>Use Cases</b> ({page}/{total}):"
         await _edit_cb_msg(callback, text,
-                           reply_markup=_saved_use_cases_kb(ucs, pid, page=page))
+                           reply_markup=_saved_use_cases_kb(ucs, flow_id,
+                                                            story_id=uc_story_id, page=page))
 
     await callback.answer()
 
@@ -1185,10 +1206,15 @@ async def handle_product(callback: CallbackQuery, callback_data: ProductCB,
     if callback_data.action == "view":
         try:
             product = await _product_api.get_by_id(pid)
-            features = await _feature_api.get_all(product_id=pid)
         except Exception as exc:
-            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            log.warning("Product fetch failed: %s", exc)
+            await callback.answer("Продукт не найден", show_alert=True)
             return
+
+        try:
+            features = await _feature_api.get_all(product_id=pid)
+        except Exception:
+            features = []
 
         text = f"📦 <b>{product['name']}</b>\n"
         if product.get("goal"):
@@ -1719,7 +1745,7 @@ async def handle_role(callback: CallbackQuery, callback_data: RoleCB,
         try:
             actor = await _actor_api.get_by_id(rid)
         except Exception as exc:
-            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            await callback.answer(f"Ошибка: {str(exc)[:180]}", show_alert=True)
             return
 
         # Find feature link to get feature_id for back navigation
@@ -1773,7 +1799,7 @@ async def handle_story(callback: CallbackQuery, callback_data: StoryCB,
         try:
             story = await _story_api.get_by_id(sid)
         except Exception as exc:
-            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            await callback.answer(f"Ошибка: {str(exc)[:180]}", show_alert=True)
             return
 
         # Check if flows already saved
@@ -1834,14 +1860,14 @@ async def handle_flow(callback: CallbackQuery, callback_data: FlowCB,
         try:
             flow = await _flow_api.get_by_id(fid)
         except Exception as exc:
-            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            await callback.answer(f"Ошибка: {str(exc)[:180]}", show_alert=True)
             return
 
         sid = flow.get("story_id", "")
 
-        # Check if use cases exist for this story
+        # Check if use cases exist for this flow
         try:
-            existing_ucs = await _use_case_api.get_all(story_id=sid)
+            existing_ucs = await _use_case_api.get_all(flow_id=fid)
         except Exception:
             existing_ucs = []
 
@@ -1852,7 +1878,8 @@ async def handle_flow(callback: CallbackQuery, callback_data: FlowCB,
                 "📋 <b>Use Cases:</b>"
             )
             await _edit_cb_msg(callback, text,
-                               reply_markup=_saved_use_cases_kb(existing_ucs, sid, page=1))
+                               reply_markup=_saved_use_cases_kb(existing_ucs, fid,
+                                                                story_id=sid, page=1))
         else:
             text = (
                 f"🔄 <b>{flow.get('title', 'Flow')}</b> "
@@ -1887,10 +1914,10 @@ async def handle_use_case(callback: CallbackQuery, callback_data: UseCaseCB,
         try:
             uc = await _use_case_api.get_by_id(uid)
         except Exception as exc:
-            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            await callback.answer(f"Ошибка: {str(exc)[:180]}", show_alert=True)
             return
 
-        sid = uc.get("story_id", "")
+        uc_flow_id = uc.get("flow_id", "")
         text = f"📋 <b>{uc.get('title', 'UC')}</b>\n\n"
         if uc.get("goal"):
             text += f"<b>Цель:</b> {uc['goal']}\n\n"
@@ -1905,7 +1932,7 @@ async def handle_use_case(callback: CallbackQuery, callback_data: UseCaseCB,
         kb = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(
                 text="◀️ Назад к use cases",
-                callback_data=StoryCB(id=sid, action="flows").pack(),
+                callback_data=FlowCB(id=uc_flow_id, action="view").pack(),
             )],
         ])
         await _edit_cb_msg(callback, text, reply_markup=kb)
