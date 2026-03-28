@@ -330,14 +330,13 @@ async def test_features_edit_by_text():
 
 
 @pytest.mark.asyncio
-async def test_save_features_drills_into_stories():
+async def test_save_features_drills_into_roles():
     from handler.v1.user.wizard.main_widget import handle_save_features
     cb = _make_callback("wizard_save_features")
     saved_features = [
         {"id": "f1", "name": "Auth", "description": "Login", "status": "draft"},
         {"id": "f2", "name": "Dashboard", "description": "View", "status": "draft"},
     ]
-    # State must return saved_features on second get_data call (from _start_feature_stories)
     data = {
         "product_id": "p1",
         "draft_features": [
@@ -352,14 +351,14 @@ async def test_save_features_drills_into_stories():
     with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
          patch("handler.v1.user.wizard.main_widget._ai") as ai:
         f_api.create = AsyncMock(side_effect=saved_features)
-        ai.generate_stories_json = AsyncMock(return_value=[
-            {"title": "Login flow", "want": "log in", "benefit": "access"},
+        ai.generate_roles_json = AsyncMock(return_value=[
+            {"name": "End User", "description": "Regular user", "role_type": "end_user"},
         ])
         await handle_save_features(cb, state)
 
     assert f_api.create.await_count == 2
-    ai.generate_stories_json.assert_awaited_once()
-    state.set_state.assert_awaited_with(ProductFSM.reviewing_stories)
+    ai.generate_roles_json.assert_awaited_once()
+    state.set_state.assert_awaited_with(ProductFSM.reviewing_roles)
 
 
 @pytest.mark.asyncio
@@ -372,57 +371,61 @@ async def test_save_features_empty_alert():
 
 
 # ═══════════════════════════════════════════════════════════
-# Feature view → stories as TEXT for review
+# Feature view → roles as TEXT for review
 # ═══════════════════════════════════════════════════════════
 
 
 @pytest.mark.asyncio
-async def test_feature_view_generates_stories_as_text():
+async def test_feature_view_generates_roles_as_text():
     from handler.v1.user.wizard.main_widget import handle_feature
     cb = _make_callback(FeatureCB(id="f1", action="view").pack())
     cb_data = FeatureCB(id="f1", action="view")
     state = _make_state()
 
     with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
-         patch("handler.v1.user.wizard.main_widget._story_api") as s_api, \
+         patch("handler.v1.user.wizard.main_widget._feature_actor_link_api") as link_api, \
          patch("handler.v1.user.wizard.main_widget._ai") as ai:
         f_api.get_by_id = AsyncMock(return_value={
             "id": "f1", "name": "Auth", "description": "Login", "product_id": "p1",
         })
-        s_api.get_all = AsyncMock(return_value=[])  # no saved stories
-        ai.generate_stories_json = AsyncMock(return_value=[
-            {"title": "Login flow", "want": "log in", "benefit": "access"},
+        link_api.get_all = AsyncMock(return_value=[])  # no saved roles
+        ai.generate_roles_json = AsyncMock(return_value=[
+            {"name": "End User", "description": "Regular user", "role_type": "end_user"},
         ])
         await handle_feature(cb, cb_data, state)
 
-    # Stories generated as text draft, NOT saved
-    state.set_state.assert_awaited_with(ProductFSM.reviewing_stories)
+    # Roles generated as text draft
+    state.set_state.assert_awaited_with(ProductFSM.reviewing_roles)
     text = cb.message.edit_text.call_args_list[-1][0][0]
-    assert "Login flow" in text
+    assert "End User" in text
     assert "Далее" in str(cb.message.edit_text.call_args_list[-1])
 
 
 @pytest.mark.asyncio
-async def test_feature_view_with_saved_stories_shows_buttons():
+async def test_feature_view_with_saved_roles_shows_buttons():
     from handler.v1.user.wizard.main_widget import handle_feature
     cb = _make_callback(FeatureCB(id="f1", action="view").pack())
     cb_data = FeatureCB(id="f1", action="view")
     state = _make_state()
 
     with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
-         patch("handler.v1.user.wizard.main_widget._story_api") as s_api:
+         patch("handler.v1.user.wizard.main_widget._feature_actor_link_api") as link_api, \
+         patch("handler.v1.user.wizard.main_widget._actor_api") as actor_api:
         f_api.get_by_id = AsyncMock(return_value={
             "id": "f1", "name": "Auth", "description": "Login", "product_id": "p1",
         })
-        s_api.get_all = AsyncMock(return_value=[
-            {"id": "s1", "title": "Login flow", "status": "draft"},
+        link_api.get_all = AsyncMock(return_value=[
+            {"actor_id": "a1", "feature_id": "f1"},
         ])
+        actor_api.get_by_id = AsyncMock(return_value={
+            "id": "a1", "name": "End User", "role_type": "end_user", "status": "draft",
+        })
         await handle_feature(cb, cb_data, state)
 
-    # Shows as buttons, not draft text
+    # Shows roles as buttons
     kb = cb.message.edit_text.call_args[1].get("reply_markup")
     texts = [b.text for r in kb.inline_keyboard for b in r]
-    assert any("Login flow" in t for t in texts)
+    assert any("End User" in t for t in texts)
 
 
 # ═══════════════════════════════════════════════════════════

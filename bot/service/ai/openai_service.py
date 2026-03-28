@@ -106,13 +106,44 @@ class OpenAIService:
         )
         return json.loads(_strip_json(await self.chat(prompt)))
 
+    # ─── Roles / Actors ─────────────────────────────────────
+
+    async def generate_roles_json(self, feature_name: str,
+                                  feature_desc: str) -> list[dict]:
+        prompt = (
+            f"Feature: {feature_name}\nDescription: {feature_desc}\n\n"
+            "Generate 2-5 user roles (actors) who interact with this feature.\n"
+            "Include different types: end user, admin, system, etc.\n"
+            "Return ONLY valid JSON array:\n"
+            '[{"name": "Role Name", "description": "Who this role is", '
+            '"role_type": "end_user|admin|system|external"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    async def edit_roles_list(self, current_list: str,
+                              user_instruction: str) -> list[dict]:
+        prompt = (
+            f"Current roles:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"name": "Role Name", "description": "Description", '
+            '"role_type": "end_user|admin|system|external"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
     # ─── Stories ────────────────────────────────────────────
 
     async def generate_stories_json(self, feature_name: str,
-                                    feature_desc: str) -> list[dict]:
+                                    feature_desc: str,
+                                    role_name: str = "") -> list[dict]:
+        role_ctx = f"\nRole/Actor: {role_name}\n" if role_name else ""
         prompt = (
-            f"Feature: {feature_name}\nDescription: {feature_desc}\n\n"
-            "Generate 3-5 user stories. Return ONLY valid JSON array:\n"
+            f"Feature: {feature_name}\nDescription: {feature_desc}\n"
+            f"{role_ctx}\n"
+            "Generate 3-5 user stories from this role's perspective. "
+            "Return ONLY valid JSON array:\n"
             '[{"title": "Short title", "want": "what they want", "benefit": "why"}]\n'
             "No markdown — pure JSON array only."
         )

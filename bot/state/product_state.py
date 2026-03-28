@@ -13,6 +13,7 @@ class ProductFSM(StatesGroup):
     waiting_for_description = State()
     reviewing_summary = State()
     reviewing_features = State()
+    reviewing_roles = State()
     reviewing_stories = State()
     reviewing_flows = State()
     reviewing_use_cases = State()

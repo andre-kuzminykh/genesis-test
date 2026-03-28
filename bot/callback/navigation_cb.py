@@ -25,6 +25,12 @@ class FeatureCB(CallbackData, prefix="f"):
     action: str = "view"  # view, edit, approve, next, gen
 
 
+class RoleCB(CallbackData, prefix="r"):
+    """Role/Actor-level actions."""
+    id: str
+    action: str = "view"
+
+
 class StoryCB(CallbackData, prefix="s"):
     """Story-level actions."""
     id: str

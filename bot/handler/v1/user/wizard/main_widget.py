@@ -34,7 +34,8 @@ from aiogram.fsm.context import FSMContext
 
 from state.product_state import ProductFSM
 from callback.navigation_cb import (
-    MenuCB, ProductCB, FeatureCB, StoryCB, FlowCB, UseCaseCB, WizardCB, PageCB,
+    MenuCB, ProductCB, FeatureCB, RoleCB, StoryCB, FlowCB, UseCaseCB,
+    WizardCB, PageCB,
 )
 from service.ai.openai_service import OpenAIService
 from service.api.product_api import ProductAPI
@@ -42,6 +43,8 @@ from service.api.feature_api import FeatureAPI
 from service.api.story_api import StoryAPI
 from service.api.flow_api import FlowAPI
 from service.api.use_case_api import UseCaseAPI
+from service.api.actor_api import ActorAPI
+from service.api.feature_actor_link_api import FeatureActorLinkAPI
 from service.voice import get_text_or_voice
 
 log = logging.getLogger(__name__)
@@ -53,6 +56,8 @@ _feature_api = FeatureAPI()
 _story_api = StoryAPI()
 _flow_api = FlowAPI()
 _use_case_api = UseCaseAPI()
+_actor_api = ActorAPI()
+_feature_actor_link_api = FeatureActorLinkAPI()
 
 PER_PAGE = 5
 
@@ -175,6 +180,32 @@ def _saved_stories_kb(stories: list[dict], feature_id: str,
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def _saved_roles_kb(roles: list[dict], feature_id: str,
+                    page: int = 1) -> InlineKeyboardMarkup:
+    """Paginated role/actor BUTTONS."""
+    total = math.ceil(len(roles) / PER_PAGE) or 1
+    page = max(1, min(page, total))
+    start = (page - 1) * PER_PAGE
+    subset = roles[start:start + PER_PAGE]
+
+    rows = []
+    for r in subset:
+        icon = "✅" if r.get("status") == "approved" else "👤"
+        rt = r.get("role_type", "end_user")
+        rows.append([InlineKeyboardButton(
+            text=f"{icon} {r.get('name', 'Role')[:35]} ({rt})",
+            callback_data=RoleCB(id=str(r["id"]), action="view").pack(),
+        )])
+    nav = _page_row("roles", page, total, parent_id=feature_id)
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton(
+        text="◀️ Назад к фичам",
+        callback_data=FeatureCB(id=feature_id, action="back").pack(),
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def _saved_flows_kb(flows: list[dict], story_id: str,
                     page: int = 1) -> InlineKeyboardMarkup:
     """Paginated flow BUTTONS."""
@@ -235,6 +266,18 @@ def _format_features_text(features: list[dict]) -> str:
         if f.get("description"):
             lines.append(f"   {f['description']}")
         lines.append("")  # blank line between features
+    return "\n".join(lines).rstrip()
+
+
+def _format_roles_text(roles: list[dict]) -> str:
+    """Format roles as numbered text list."""
+    lines = []
+    for i, r in enumerate(roles, 1):
+        rt = r.get("role_type", "end_user")
+        lines.append(f"{i}. <b>{r.get('name', 'Role')}</b> ({rt})")
+        if r.get("description"):
+            lines.append(f"   {r['description']}")
+        lines.append("")
     return "\n".join(lines).rstrip()
 
 
@@ -396,6 +439,23 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         text = f"📋 <b>Фичи</b> ({page}/{total}):\n\n" + _format_features_text(features)
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_features_kb(features, pid, page=page))
+
+    elif entity == "roles":
+        try:
+            links = await _feature_actor_link_api.get_all(feature_id=pid)
+            roles = []
+            for lnk in links:
+                try:
+                    actor = await _actor_api.get_by_id(lnk["actor_id"])
+                    roles.append(actor)
+                except Exception:
+                    pass
+        except Exception:
+            roles = []
+        total = math.ceil(len(roles) / PER_PAGE) or 1
+        text = f"👤 <b>Роли</b> ({page}/{total}):"
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_roles_kb(roles, pid, page=page))
 
     elif entity == "stories":
         try:
@@ -686,14 +746,14 @@ async def handle_features_edit(message: Message, state: FSMContext,
 # ═══════════════════════════════════════════════════════════
 
 
-async def _start_feature_stories(callback: CallbackQuery,
-                                 state: FSMContext,
-                                 feature_index: int) -> None:
-    """Generate stories TEXT for feature at given index."""
+async def _start_feature_roles(callback: CallbackQuery,
+                               state: FSMContext,
+                               feature_index: int) -> None:
+    """Generate roles TEXT for feature at given index, or finish if all done."""
     data = await state.get_data()
     features = data.get("saved_features", [])
     if feature_index >= len(features):
-        # All features done — show features list as buttons
+        # All features fully processed — show features as buttons
         product_id = data.get("product_id", "")
         await state.clear()
         text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(features)
@@ -711,10 +771,68 @@ async def _start_feature_stories(callback: CallbackQuery,
 
     await _edit_cb_msg(callback,
                        f"🔹 <b>Фича {feature_index + 1}/{len(features)}: "
-                       f"{feat['name']}</b>\n\n⏳ Генерирую user stories...")
+                       f"{feat['name']}</b>\n\n⏳ Генерирую роли...")
+    try:
+        roles_data = await _ai.generate_roles_json(
+            feat["name"], feat.get("description", "")
+        )
+    except Exception as exc:
+        await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
+        return
+
+    draft = [{"name": r.get("name", "Role"),
+              "description": r.get("description", ""),
+              "role_type": r.get("role_type", "end_user")}
+             for r in roles_data]
+    await state.update_data(draft_roles=draft)
+    await state.set_state(ProductFSM.reviewing_roles)
+
+    text = (
+        f"🔹 <b>Фича {feature_index + 1}/{len(features)}: {feat['name']}</b>\n\n"
+        "👤 <b>Роли (Actors):</b>\n"
+        "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
+        + _format_roles_text(draft)
+    )
+    await _edit_cb_msg(
+        callback, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_roles",
+        ),
+    )
+
+
+async def _start_role_stories(callback: CallbackQuery,
+                               state: FSMContext,
+                               role_index: int) -> None:
+    """Generate stories TEXT for role at given index, or next feature if all roles done."""
+    data = await state.get_data()
+    roles = data.get("saved_roles", [])
+    if role_index >= len(roles):
+        # All roles done for this feature — next feature
+        fi = data.get("feature_index", 0) + 1
+        await _start_feature_roles(callback, state, fi)
+        return
+
+    role = roles[role_index]
+    features = data.get("saved_features", [])
+    fi = data.get("feature_index", 0)
+    feat = features[fi] if fi < len(features) else {"name": "?", "description": ""}
+    fid = data.get("current_feature_id", "")
+
+    await state.update_data(
+        role_index=role_index,
+        current_role_name=role.get("name", ""),
+        current_role_id=str(role.get("id", "")),
+    )
+
+    await _edit_cb_msg(callback,
+                       f"👤 <b>Роль {role_index + 1}/{len(roles)}: "
+                       f"{role.get('name', '')}</b>\n\n⏳ Генерирую user stories...")
     try:
         stories_data = await _ai.generate_stories_json(
-            feat["name"], feat.get("description", "")
+            feat["name"], feat.get("description", ""),
+            role_name=role.get("name", ""),
         )
     except Exception as exc:
         await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
@@ -728,7 +846,8 @@ async def _start_feature_stories(callback: CallbackQuery,
     await state.set_state(ProductFSM.reviewing_stories)
 
     text = (
-        f"🔹 <b>Фича {feature_index + 1}/{len(features)}: {feat['name']}</b>\n\n"
+        f"👤 <b>Роль: {role.get('name', '')}</b> | "
+        f"Фича: {feat['name']}\n\n"
         "📖 <b>User Stories:</b>\n"
         "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
         + _format_stories_text(draft)
@@ -749,9 +868,9 @@ async def _start_story_flows(callback: CallbackQuery,
     data = await state.get_data()
     stories = data.get("saved_stories", [])
     if story_index >= len(stories):
-        # All stories done for this feature — next feature
-        fi = data.get("feature_index", 0) + 1
-        await _start_feature_stories(callback, state, fi)
+        # All stories done for this role — next role
+        ri = data.get("role_index", 0) + 1
+        await _start_role_stories(callback, state, ri)
         return
 
     story = stories[story_index]
@@ -842,6 +961,102 @@ async def _start_story_use_cases(callback: CallbackQuery,
 
 
 # ═══════════════════════════════════════════════════════════
+# reviewing_roles — edit TEXT list by typing/voice
+# ═══════════════════════════════════════════════════════════
+
+
+@router.message(ProductFSM.reviewing_roles)
+async def handle_roles_edit(message: Message, state: FSMContext,
+                            bot: Bot) -> None:
+    instruction = await get_text_or_voice(message, bot)
+    await _delete_user_msg(message)
+    if not instruction:
+        return
+
+    data = await state.get_data()
+    draft = data.get("draft_roles", [])
+    fid = data.get("current_feature_id", "")
+    await _send_or_edit(message, state, "⏳ Применяю правки к ролям...")
+
+    current_text = "\n".join(
+        f"{i}. {r['name']} ({r.get('role_type', 'end_user')}): "
+        f"{r.get('description', '')}"
+        for i, r in enumerate(draft, 1)
+    )
+
+    try:
+        edited = await _ai.edit_roles_list(current_text, instruction)
+    except Exception as exc:
+        await _send_or_edit(message, state, f"⚠️ Ошибка: {exc}")
+        return
+
+    await state.update_data(draft_roles=edited)
+    text = (
+        "👤 <b>Обновлённые роли:</b>\n"
+        "<i>Можете продолжить редактирование или нажмите Далее</i>\n\n"
+        + _format_roles_text(edited)
+    )
+    await _send_or_edit(
+        message, state, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_roles",
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# wizard_save_roles — save actors + links, drill into first role's stories
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "wizard_save_roles")
+async def handle_save_roles(callback: CallbackQuery,
+                            state: FSMContext) -> None:
+    """Save roles to backend as actors + feature-actor links, then drill into first role."""
+    data = await state.get_data()
+    draft = data.get("draft_roles", [])
+    pid = data.get("current_feature_product_id", data.get("product_id", ""))
+    fid = data.get("current_feature_id", "")
+
+    if not draft:
+        await callback.answer("Нет ролей для сохранения", show_alert=True)
+        return
+
+    await _edit_cb_msg(callback, "⏳ Сохраняю...")
+
+    saved = []
+    for rd in draft:
+        try:
+            actor = await _actor_api.create({
+                "product_id": pid,
+                "name": rd.get("name", "Role"),
+                "description": rd.get("description", ""),
+                "role_type": rd.get("role_type", "end_user"),
+            })
+            saved.append(actor)
+            # Link actor to feature
+            try:
+                await _feature_actor_link_api.create({
+                    "product_id": pid,
+                    "feature_id": fid,
+                    "actor_id": str(actor["id"]),
+                })
+            except Exception as exc:
+                log.warning("Feature-actor link failed: %s", exc)
+        except Exception as exc:
+            log.warning("Actor save failed: %s", exc)
+            saved.append({"id": "", "name": rd.get("name", "Role"),
+                          "description": rd.get("description", ""),
+                          "role_type": rd.get("role_type", "end_user"),
+                          "status": "draft"})
+
+    await state.update_data(saved_roles=saved)
+    await _start_role_stories(callback, state, 0)
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════
 # wizard_save_features — save to backend, drill into first feature
 # ═══════════════════════════════════════════════════════════
 
@@ -876,7 +1091,7 @@ async def handle_save_features(callback: CallbackQuery,
                           "status": "draft"})
 
     await state.update_data(saved_features=saved)
-    await _start_feature_stories(callback, state, 0)
+    await _start_feature_roles(callback, state, 0)
     await callback.answer()
 
 
@@ -958,27 +1173,38 @@ async def handle_feature(callback: CallbackQuery, callback_data: FeatureCB,
         except Exception:
             feature = {"name": "?", "description": "", "product_id": ""}
 
-        # Check if stories already saved
+        # Check if roles already saved for this feature
         try:
-            existing = await _story_api.get_all(feature_id=fid)
+            links = await _feature_actor_link_api.get_all(feature_id=fid)
+            existing_roles = []
+            for lnk in links:
+                try:
+                    actor = await _actor_api.get_by_id(lnk["actor_id"])
+                    existing_roles.append(actor)
+                except Exception:
+                    pass
         except Exception:
-            existing = []
+            existing_roles = []
 
-        if existing:
-            # Already saved — show as buttons
+        if existing_roles:
+            # Already saved — show roles as buttons
             text = (
-                f"🔹 <b>{feature['name']}</b>\n"
-                f"{feature.get('description', '')[:500]}\n\n"
-                "📖 <b>User Stories:</b>"
+                f"🔹 <b>{feature['name']}</b>\n\n"
+                "👤 <b>Роли:</b>"
             )
             await _edit_cb_msg(callback, text,
-                               reply_markup=_saved_stories_kb(existing, fid, page=1))
+                               reply_markup=_saved_roles_kb(existing_roles, fid, page=1))
         else:
-            # Generate stories as TEXT for review
+            # Generate roles as TEXT for review
+            pid = feature.get("product_id", "")
+            await state.update_data(
+                current_feature_id=fid,
+                current_feature_product_id=pid,
+            )
             await _edit_cb_msg(callback,
-                               f"🔹 <b>{feature['name']}</b>\n\n⏳ Генерирую user stories...")
+                               f"🔹 <b>{feature['name']}</b>\n\n⏳ Генерирую роли...")
             try:
-                stories_data = await _ai.generate_stories_json(
+                roles_data = await _ai.generate_roles_json(
                     feature["name"], feature.get("description", "")
                 )
             except Exception as exc:
@@ -986,33 +1212,24 @@ async def handle_feature(callback: CallbackQuery, callback_data: FeatureCB,
                 await callback.answer()
                 return
 
-            draft_stories = []
-            for sd in stories_data:
-                draft_stories.append({
-                    "title": sd.get("title", "Story"),
-                    "want": sd.get("want", ""),
-                    "benefit": sd.get("benefit", ""),
-                })
-
-            await state.update_data(
-                draft_stories=draft_stories,
-                current_feature_id=fid,
-                current_feature_product_id=feature.get("product_id", ""),
-            )
-            await state.set_state(ProductFSM.reviewing_stories)
+            draft_roles = [{"name": r.get("name", "Role"),
+                            "description": r.get("description", ""),
+                            "role_type": r.get("role_type", "end_user")}
+                           for r in roles_data]
+            await state.update_data(draft_roles=draft_roles)
+            await state.set_state(ProductFSM.reviewing_roles)
 
             text = (
                 f"🔹 <b>{feature['name']}</b>\n\n"
-                "📖 <b>User Stories:</b>\n"
-                "<i>Можете отредактировать текстом/голосом, затем нажмите Далее</i>\n\n"
-                + _format_stories_text(draft_stories)
+                "👤 <b>Роли (Actors):</b>\n"
+                "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
+                + _format_roles_text(draft_roles)
             )
             await _edit_cb_msg(
                 callback, text,
                 reply_markup=_review_kb(
                     back_cb=FeatureCB(id=fid, action="back").pack(),
-                    next_cb="wizard_save_stories",
-                    back_text="Назад",
+                    next_cb="wizard_save_roles",
                 ),
             )
 
@@ -1295,9 +1512,67 @@ async def handle_save_use_cases(callback: CallbackQuery,
         except Exception as exc:
             log.warning("UseCase save failed: %s", exc)
 
-    # Advance: next story's flows, or next feature
+    # Advance: next story's flows → next role → next feature
     story_index = data.get("story_index", 0) + 1
     await _start_story_flows(callback, state, story_index)
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════
+# Role view
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(RoleCB.filter())
+async def handle_role(callback: CallbackQuery, callback_data: RoleCB,
+                      state: FSMContext) -> None:
+    rid = callback_data.id
+
+    if callback_data.action == "view":
+        try:
+            actor = await _actor_api.get_by_id(rid)
+        except Exception as exc:
+            await callback.answer(f"Ошибка: {exc}", show_alert=True)
+            return
+
+        # Find feature link to get feature_id for back navigation
+        try:
+            links = await _feature_actor_link_api.get_all(actor_id=rid)
+            feature_id = links[0]["feature_id"] if links else ""
+        except Exception:
+            feature_id = ""
+
+        # Check if stories exist for this feature (from this role's perspective)
+        try:
+            stories = await _story_api.get_all(feature_id=feature_id)
+        except Exception:
+            stories = []
+
+        if stories:
+            text = (
+                f"👤 <b>{actor.get('name', 'Role')}</b> "
+                f"({actor.get('role_type', 'end_user')})\n\n"
+                "📖 <b>User Stories:</b>"
+            )
+            await _edit_cb_msg(callback, text,
+                               reply_markup=_saved_stories_kb(stories, feature_id, page=1))
+        else:
+            text = (
+                f"👤 <b>{actor.get('name', 'Role')}</b> "
+                f"({actor.get('role_type', 'end_user')})\n\n"
+            )
+            if actor.get("description"):
+                text += f"{actor['description']}\n"
+            text += f"\nСтатус: {actor.get('status', 'draft')}"
+
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [InlineKeyboardButton(
+                    text="◀️ Назад к ролям",
+                    callback_data=FeatureCB(id=feature_id, action="view").pack(),
+                )],
+            ])
+            await _edit_cb_msg(callback, text, reply_markup=kb)
+
     await callback.answer()
 
 
