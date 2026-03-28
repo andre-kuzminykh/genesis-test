@@ -43,6 +43,12 @@ class WizardCB(CallbackData, prefix="w"):
     ctx: str = ""  # context id (product_id, feature_id, etc.)
 
 
+class UseCaseCB(CallbackData, prefix="uc"):
+    """Use-case-level actions."""
+    id: str
+    action: str = "view"
+
+
 class PageCB(CallbackData, prefix="pg"):
     """Pagination navigation."""
     entity: str  # products, features, stories

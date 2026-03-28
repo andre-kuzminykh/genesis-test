@@ -34,13 +34,14 @@ from aiogram.fsm.context import FSMContext
 
 from state.product_state import ProductFSM
 from callback.navigation_cb import (
-    MenuCB, ProductCB, FeatureCB, StoryCB, WizardCB, PageCB,
+    MenuCB, ProductCB, FeatureCB, StoryCB, FlowCB, UseCaseCB, WizardCB, PageCB,
 )
 from service.ai.openai_service import OpenAIService
 from service.api.product_api import ProductAPI
 from service.api.feature_api import FeatureAPI
 from service.api.story_api import StoryAPI
 from service.api.flow_api import FlowAPI
+from service.api.use_case_api import UseCaseAPI
 from service.voice import get_text_or_voice
 
 log = logging.getLogger(__name__)
@@ -51,6 +52,7 @@ _product_api = ProductAPI()
 _feature_api = FeatureAPI()
 _story_api = StoryAPI()
 _flow_api = FlowAPI()
+_use_case_api = UseCaseAPI()
 
 PER_PAGE = 5
 
@@ -193,6 +195,36 @@ def _format_stories_text(stories: list[dict]) -> str:
             lines.append(f"   Хочу: {s['want']}")
         if s.get("benefit"):
             lines.append(f"   Чтобы: {s['benefit']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _format_flows_text(flows: list[dict]) -> str:
+    """Format flows as numbered list with descriptions."""
+    lines = []
+    for i, f in enumerate(flows, 1):
+        ft = f.get("flow_type", "primary")
+        lines.append(f"{i}. <b>{f.get('title', 'Flow')}</b> ({ft})")
+        if f.get("description"):
+            lines.append(f"   {f['description']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _format_use_cases_text(use_cases: list[dict]) -> str:
+    """Format use cases as numbered Given/When/Then list."""
+    lines = []
+    for i, uc in enumerate(use_cases, 1):
+        rt = uc.get("req_type", "functional")
+        lines.append(f"{i}. <b>{uc.get('title', 'Use Case')}</b> [{rt}]")
+        if uc.get("goal"):
+            lines.append(f"   Цель: {uc['goal']}")
+        if uc.get("given_text"):
+            lines.append(f"   Given: {uc['given_text']}")
+        if uc.get("when_text"):
+            lines.append(f"   When: {uc['when_text']}")
+        if uc.get("then_text"):
+            lines.append(f"   Then: {uc['then_text']}")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -578,7 +610,167 @@ async def handle_features_edit(message: Message, state: FSMContext,
 
 
 # ═══════════════════════════════════════════════════════════
-# wizard_save_features — save to backend, show as BUTTONS
+# Cascade helpers
+# ═══════════════════════════════════════════════════════════
+
+
+async def _start_feature_stories(callback: CallbackQuery,
+                                 state: FSMContext,
+                                 feature_index: int) -> None:
+    """Generate stories TEXT for feature at given index."""
+    data = await state.get_data()
+    features = data.get("saved_features", [])
+    if feature_index >= len(features):
+        # All features done — show features list as buttons
+        product_id = data.get("product_id", "")
+        await state.clear()
+        text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(features)
+        await _edit_cb_msg(callback, text,
+                           reply_markup=_saved_features_kb(features, product_id, page=1))
+        return
+
+    feat = features[feature_index]
+    fid = str(feat.get("id", ""))
+    await state.update_data(
+        feature_index=feature_index,
+        current_feature_id=fid,
+        current_feature_product_id=data.get("product_id", ""),
+    )
+
+    await _edit_cb_msg(callback,
+                       f"🔹 <b>Фича {feature_index + 1}/{len(features)}: "
+                       f"{feat['name']}</b>\n\n⏳ Генерирую user stories...")
+    try:
+        stories_data = await _ai.generate_stories_json(
+            feat["name"], feat.get("description", "")
+        )
+    except Exception as exc:
+        await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
+        return
+
+    draft = [{"title": sd.get("title", "Story"),
+              "want": sd.get("want", ""),
+              "benefit": sd.get("benefit", "")}
+             for sd in stories_data]
+    await state.update_data(draft_stories=draft)
+    await state.set_state(ProductFSM.reviewing_stories)
+
+    text = (
+        f"🔹 <b>Фича {feature_index + 1}/{len(features)}: {feat['name']}</b>\n\n"
+        "📖 <b>User Stories:</b>\n"
+        "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
+        + _format_stories_text(draft)
+    )
+    await _edit_cb_msg(
+        callback, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_stories",
+        ),
+    )
+
+
+async def _start_story_flows(callback: CallbackQuery,
+                              state: FSMContext,
+                              story_index: int) -> None:
+    """Generate flows TEXT for story at given index."""
+    data = await state.get_data()
+    stories = data.get("saved_stories", [])
+    if story_index >= len(stories):
+        # All stories done for this feature — next feature
+        fi = data.get("feature_index", 0) + 1
+        await _start_feature_stories(callback, state, fi)
+        return
+
+    story = stories[story_index]
+    sid = str(story.get("id", ""))
+    await state.update_data(
+        story_index=story_index,
+        current_story_id=sid,
+    )
+
+    await _edit_cb_msg(callback,
+                       f"📖 <b>Story {story_index + 1}/{len(stories)}: "
+                       f"{story.get('title', '')}</b>\n\n⏳ Генерирую user flows...")
+    try:
+        flows_data = await _ai.generate_flows_json(
+            story.get("title", ""), story.get("want_text", story.get("want", ""))
+        )
+    except Exception as exc:
+        await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
+        return
+
+    draft = [{"title": fd.get("title", "Flow"),
+              "flow_type": fd.get("flow_type", "primary"),
+              "description": fd.get("description", "")}
+             for fd in flows_data]
+    await state.update_data(draft_flows=draft)
+    await state.set_state(ProductFSM.reviewing_flows)
+
+    fid = data.get("current_feature_id", "")
+    text = (
+        f"📖 <b>Story {story_index + 1}/{len(stories)}: "
+        f"{story.get('title', '')}</b>\n\n"
+        "🔄 <b>User Flows:</b>\n"
+        "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
+        + _format_flows_text(draft)
+    )
+    await _edit_cb_msg(
+        callback, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_flows",
+        ),
+    )
+
+
+async def _start_story_use_cases(callback: CallbackQuery,
+                                  state: FSMContext) -> None:
+    """Generate use cases TEXT for current story."""
+    data = await state.get_data()
+    story = (data.get("saved_stories", []) or [{}])[data.get("story_index", 0)]
+    flows = data.get("saved_flows", [])
+    flow_titles = ", ".join(f.get("title", "") for f in flows)
+
+    await _edit_cb_msg(callback,
+                       f"📖 <b>{story.get('title', 'Story')}</b>\n\n"
+                       "⏳ Генерирую use cases...")
+    try:
+        uc_data = await _ai.generate_use_cases_json(
+            story.get("title", ""), flow_titles
+        )
+    except Exception as exc:
+        await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
+        return
+
+    draft = [{"title": u.get("title", "UC"),
+              "goal": u.get("goal", ""),
+              "given_text": u.get("given_text", ""),
+              "when_text": u.get("when_text", ""),
+              "then_text": u.get("then_text", ""),
+              "req_type": u.get("req_type", "functional")}
+             for u in uc_data]
+    await state.update_data(draft_use_cases=draft)
+    await state.set_state(ProductFSM.reviewing_use_cases)
+
+    fid = data.get("current_feature_id", "")
+    text = (
+        f"📖 <b>{story.get('title', 'Story')}</b>\n\n"
+        "📋 <b>Use Cases (Given/When/Then):</b>\n"
+        "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
+        + _format_use_cases_text(draft)
+    )
+    await _edit_cb_msg(
+        callback, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_use_cases",
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# wizard_save_features — save to backend, drill into first feature
 # ═══════════════════════════════════════════════════════════
 
 
@@ -612,60 +804,7 @@ async def handle_save_features(callback: CallbackQuery,
                           "status": "draft"})
 
     await state.update_data(saved_features=saved)
-
-    # Auto-drill into first feature with an id
-    first = next((f for f in saved if f.get("id")), None)
-    if first:
-        fid = str(first["id"])
-        await _edit_cb_msg(callback,
-                           f"🔹 <b>{first['name']}</b>\n\n⏳ Генерирую user stories...")
-        try:
-            stories_data = await _ai.generate_stories_json(
-                first["name"], first.get("description", "")
-            )
-        except Exception as exc:
-            # Fallback to features buttons
-            await state.clear()
-            await _edit_cb_msg(callback,
-                               f"⚠️ Ошибка генерации stories: {exc}",
-                               reply_markup=_saved_features_kb(saved, product_id, page=1))
-            await callback.answer()
-            return
-
-        draft_stories = [
-            {"title": sd.get("title", "Story"),
-             "want": sd.get("want", ""),
-             "benefit": sd.get("benefit", "")}
-            for sd in stories_data
-        ]
-        await state.update_data(
-            draft_stories=draft_stories,
-            current_feature_id=fid,
-            current_feature_product_id=product_id,
-        )
-        await state.set_state(ProductFSM.reviewing_stories)
-
-        text = (
-            f"🔹 <b>{first['name']}</b>\n\n"
-            "📖 <b>User Stories:</b>\n"
-            "<i>Можете отредактировать текстом/голосом, затем нажмите Далее</i>\n\n"
-            + _format_stories_text(draft_stories)
-        )
-        await _edit_cb_msg(
-            callback, text,
-            reply_markup=_review_kb(
-                back_cb=FeatureCB(id=fid, action="back").pack(),
-                next_cb="wizard_save_stories",
-                back_text="Назад",
-            ),
-        )
-    else:
-        # All saves failed — show features list
-        await state.clear()
-        text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(saved)
-        await _edit_cb_msg(callback, text,
-                           reply_markup=_saved_features_kb(saved, product_id, page=1))
-
+    await _start_feature_stories(callback, state, 0)
     await callback.answer()
 
 
@@ -875,11 +1014,11 @@ async def handle_stories_edit(message: Message, state: FSMContext,
 @router.callback_query(F.data == "wizard_save_stories")
 async def handle_save_stories(callback: CallbackQuery,
                               state: FSMContext) -> None:
-    """Save stories to backend silently, then go to next feature or features list."""
+    """Save stories to backend, then drill into flows for first story."""
     data = await state.get_data()
     draft = data.get("draft_stories", [])
     fid = data.get("current_feature_id", "")
-    pid = data.get("current_feature_product_id", "")
+    pid = data.get("current_feature_product_id", data.get("product_id", ""))
 
     if not draft:
         await callback.answer("Нет stories для сохранения", show_alert=True)
@@ -887,87 +1026,206 @@ async def handle_save_stories(callback: CallbackQuery,
 
     await _edit_cb_msg(callback, "⏳ Сохраняю...")
 
+    saved = []
     for sd in draft:
         try:
-            await _story_api.create({
+            story = await _story_api.create({
                 "product_id": pid,
                 "feature_id": fid,
                 "title": sd.get("title", "Story"),
                 "want_text": sd.get("want", ""),
                 "benefit_text": sd.get("benefit", ""),
             })
+            saved.append(story)
         except Exception as exc:
             log.warning("Story save failed: %s", exc)
+            saved.append({"id": "", "title": sd.get("title", "Story"),
+                          "want": sd.get("want", ""),
+                          "benefit": sd.get("benefit", ""),
+                          "status": "draft"})
 
-    # Find next feature without stories
+    await state.update_data(saved_stories=saved)
+    await _start_story_flows(callback, state, 0)
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════
+# reviewing_flows — edit TEXT list by typing/voice
+# ═══════════════════════════════════════════════════════════
+
+
+@router.message(ProductFSM.reviewing_flows)
+async def handle_flows_edit(message: Message, state: FSMContext,
+                            bot: Bot) -> None:
+    instruction = await get_text_or_voice(message, bot)
+    await _delete_user_msg(message)
+    if not instruction:
+        return
+
+    data = await state.get_data()
+    draft = data.get("draft_flows", [])
+    fid = data.get("current_feature_id", "")
+    await _send_or_edit(message, state, "⏳ Применяю правки к flows...")
+
+    current_text = "\n".join(
+        f"{i}. {f['title']} ({f.get('flow_type', 'primary')}): "
+        f"{f.get('description', '')}"
+        for i, f in enumerate(draft, 1)
+    )
+
     try:
-        all_features = await _feature_api.get_all(product_id=pid)
-    except Exception:
-        all_features = []
+        edited = await _ai.edit_flows_list(current_text, instruction)
+    except Exception as exc:
+        await _send_or_edit(message, state, f"⚠️ Ошибка: {exc}")
+        return
 
-    next_feature = None
-    for feat in all_features:
-        feat_id = str(feat.get("id", ""))
-        if feat_id and feat_id != fid:
-            try:
-                stories = await _story_api.get_all(feature_id=feat_id)
-                if not stories:
-                    next_feature = feat
-                    break
-            except Exception:
-                next_feature = feat
-                break
+    await state.update_data(draft_flows=edited)
+    text = (
+        "🔄 <b>Обновлённые flows:</b>\n"
+        "<i>Можете продолжить редактирование или нажмите Далее</i>\n\n"
+        + _format_flows_text(edited)
+    )
+    await _send_or_edit(
+        message, state, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_flows",
+        ),
+    )
 
-    if next_feature:
-        # Auto-drill into next feature
-        nfid = str(next_feature["id"])
-        await _edit_cb_msg(callback,
-                           f"🔹 <b>{next_feature['name']}</b>\n\n⏳ Генерирую user stories...")
+
+# ═══════════════════════════════════════════════════════════
+# wizard_save_flows — save to backend, drill into use cases
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "wizard_save_flows")
+async def handle_save_flows(callback: CallbackQuery,
+                            state: FSMContext) -> None:
+    """Save flows to backend, then drill into use cases for current story."""
+    data = await state.get_data()
+    draft = data.get("draft_flows", [])
+    pid = data.get("current_feature_product_id", data.get("product_id", ""))
+    fid = data.get("current_feature_id", "")
+    sid = data.get("current_story_id", "")
+
+    if not draft:
+        await callback.answer("Нет flows для сохранения", show_alert=True)
+        return
+
+    await _edit_cb_msg(callback, "⏳ Сохраняю...")
+
+    saved = []
+    for fd in draft:
         try:
-            stories_data = await _ai.generate_stories_json(
-                next_feature["name"], next_feature.get("description", "")
-            )
+            flow = await _flow_api.create({
+                "product_id": pid,
+                "feature_id": fid,
+                "story_id": sid,
+                "title": fd.get("title", "Flow"),
+                "description": fd.get("description", ""),
+                "flow_type": fd.get("flow_type", "primary"),
+            })
+            saved.append(flow)
         except Exception as exc:
-            await state.clear()
-            await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}",
-                               reply_markup=_saved_features_kb(all_features, pid, page=1))
-            await callback.answer()
-            return
+            log.warning("Flow save failed: %s", exc)
+            saved.append({"id": "", "title": fd.get("title", "Flow"),
+                          "flow_type": fd.get("flow_type", "primary"),
+                          "description": fd.get("description", ""),
+                          "status": "draft"})
 
-        draft_stories = [
-            {"title": sd.get("title", "Story"),
-             "want": sd.get("want", ""),
-             "benefit": sd.get("benefit", "")}
-            for sd in stories_data
-        ]
-        await state.update_data(
-            draft_stories=draft_stories,
-            current_feature_id=nfid,
-            current_feature_product_id=pid,
-        )
-        await state.set_state(ProductFSM.reviewing_stories)
+    await state.update_data(saved_flows=saved)
+    await _start_story_use_cases(callback, state)
+    await callback.answer()
 
-        text = (
-            f"🔹 <b>{next_feature['name']}</b>\n\n"
-            "📖 <b>User Stories:</b>\n"
-            "<i>Можете отредактировать текстом/голосом, затем нажмите Далее</i>\n\n"
-            + _format_stories_text(draft_stories)
-        )
-        await _edit_cb_msg(
-            callback, text,
-            reply_markup=_review_kb(
-                back_cb=FeatureCB(id=nfid, action="back").pack(),
-                next_cb="wizard_save_stories",
-                back_text="Назад",
-            ),
-        )
-    else:
-        # All features done — go to features list
-        await state.clear()
-        text = "📋 <b>Фичи:</b>\n\n" + _format_features_text(all_features)
-        await _edit_cb_msg(callback, text,
-                           reply_markup=_saved_features_kb(all_features, pid, page=1))
 
+# ═══════════════════════════════════════════════════════════
+# reviewing_use_cases — edit TEXT list by typing/voice
+# ═══════════════════════════════════════════════════════════
+
+
+@router.message(ProductFSM.reviewing_use_cases)
+async def handle_use_cases_edit(message: Message, state: FSMContext,
+                                bot: Bot) -> None:
+    instruction = await get_text_or_voice(message, bot)
+    await _delete_user_msg(message)
+    if not instruction:
+        return
+
+    data = await state.get_data()
+    draft = data.get("draft_use_cases", [])
+    fid = data.get("current_feature_id", "")
+    await _send_or_edit(message, state, "⏳ Применяю правки к use cases...")
+
+    current_text = "\n".join(
+        f"{i}. {u['title']} [{u.get('req_type', 'functional')}]\n"
+        f"   Given: {u.get('given_text', '')}\n"
+        f"   When: {u.get('when_text', '')}\n"
+        f"   Then: {u.get('then_text', '')}"
+        for i, u in enumerate(draft, 1)
+    )
+
+    try:
+        edited = await _ai.edit_use_cases_list(current_text, instruction)
+    except Exception as exc:
+        await _send_or_edit(message, state, f"⚠️ Ошибка: {exc}")
+        return
+
+    await state.update_data(draft_use_cases=edited)
+    text = (
+        "📋 <b>Обновлённые use cases:</b>\n"
+        "<i>Можете продолжить редактирование или нажмите Далее</i>\n\n"
+        + _format_use_cases_text(edited)
+    )
+    await _send_or_edit(
+        message, state, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_use_cases",
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# wizard_save_use_cases — save to backend, next story/feature
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "wizard_save_use_cases")
+async def handle_save_use_cases(callback: CallbackQuery,
+                                state: FSMContext) -> None:
+    """Save use cases to backend, then advance to next story or feature."""
+    data = await state.get_data()
+    draft = data.get("draft_use_cases", [])
+    pid = data.get("current_feature_product_id", data.get("product_id", ""))
+    fid = data.get("current_feature_id", "")
+    sid = data.get("current_story_id", "")
+
+    if not draft:
+        await callback.answer("Нет use cases для сохранения", show_alert=True)
+        return
+
+    await _edit_cb_msg(callback, "⏳ Сохраняю...")
+
+    for uc in draft:
+        try:
+            await _use_case_api.create({
+                "product_id": pid,
+                "feature_id": fid,
+                "story_id": sid,
+                "title": uc.get("title", "UC"),
+                "goal": uc.get("goal", ""),
+                "given_text": uc.get("given_text", ""),
+                "when_text": uc.get("when_text", ""),
+                "then_text": uc.get("then_text", ""),
+                "req_type": uc.get("req_type", "functional"),
+            })
+        except Exception as exc:
+            log.warning("UseCase save failed: %s", exc)
+
+    # Advance: next story's flows, or next feature
+    story_index = data.get("story_index", 0) + 1
+    await _start_story_flows(callback, state, story_index)
     await callback.answer()
 
 

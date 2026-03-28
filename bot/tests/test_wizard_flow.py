@@ -330,30 +330,36 @@ async def test_features_edit_by_text():
 
 
 @pytest.mark.asyncio
-async def test_save_features_creates_buttons():
+async def test_save_features_drills_into_stories():
     from handler.v1.user.wizard.main_widget import handle_save_features
     cb = _make_callback("wizard_save_features")
-    state = _make_state(data={
+    saved_features = [
+        {"id": "f1", "name": "Auth", "description": "Login", "status": "draft"},
+        {"id": "f2", "name": "Dashboard", "description": "View", "status": "draft"},
+    ]
+    # State must return saved_features on second get_data call (from _start_feature_stories)
+    data = {
         "product_id": "p1",
         "draft_features": [
             {"name": "Auth", "description": "Login"},
             {"name": "Dashboard", "description": "View"},
         ],
-    })
-    with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api:
-        f_api.create = AsyncMock(side_effect=[
-            {"id": "f1", "name": "Auth", "status": "draft"},
-            {"id": "f2", "name": "Dashboard", "status": "draft"},
+    }
+    data_after = {**data, "saved_features": saved_features}
+    state = _make_state(data=data)
+    state.get_data = AsyncMock(side_effect=[data, data_after])
+
+    with patch("handler.v1.user.wizard.main_widget._feature_api") as f_api, \
+         patch("handler.v1.user.wizard.main_widget._ai") as ai:
+        f_api.create = AsyncMock(side_effect=saved_features)
+        ai.generate_stories_json = AsyncMock(return_value=[
+            {"title": "Login flow", "want": "log in", "benefit": "access"},
         ])
         await handle_save_features(cb, state)
 
     assert f_api.create.await_count == 2
-    state.clear.assert_awaited()
-    # Result has buttons
-    kb = cb.message.edit_text.call_args[1].get("reply_markup")
-    assert kb is not None
-    texts = [b.text for r in kb.inline_keyboard for b in r]
-    assert any("Auth" in t for t in texts)
+    ai.generate_stories_json.assert_awaited_once()
+    state.set_state.assert_awaited_with(ProductFSM.reviewing_stories)
 
 
 @pytest.mark.asyncio
@@ -452,24 +458,33 @@ async def test_stories_edit_by_text():
 
 
 @pytest.mark.asyncio
-async def test_save_stories_creates_buttons():
+async def test_save_stories_drills_into_flows():
     from handler.v1.user.wizard.main_widget import handle_save_stories
     cb = _make_callback("wizard_save_stories")
-    state = _make_state(data={
+    saved_story = {"id": "s1", "title": "Login", "want": "log in", "status": "draft"}
+    data = {
         "current_feature_id": "f1",
         "current_feature_product_id": "p1",
+        "product_id": "p1",
         "draft_stories": [
             {"title": "Login", "want": "log in", "benefit": "access"},
         ],
-    })
-    with patch("handler.v1.user.wizard.main_widget._story_api") as s_api:
-        s_api.create = AsyncMock(return_value={
-            "id": "s1", "title": "Login", "status": "draft",
-        })
+    }
+    data_after = {**data, "saved_stories": [saved_story]}
+    state = _make_state(data=data)
+    state.get_data = AsyncMock(side_effect=[data, data_after])
+
+    with patch("handler.v1.user.wizard.main_widget._story_api") as s_api, \
+         patch("handler.v1.user.wizard.main_widget._ai") as ai:
+        s_api.create = AsyncMock(return_value=saved_story)
+        ai.generate_flows_json = AsyncMock(return_value=[
+            {"title": "Login flow", "flow_type": "primary", "description": "Steps"},
+        ])
         await handle_save_stories(cb, state)
 
     s_api.create.assert_awaited_once()
-    state.clear.assert_awaited()
+    ai.generate_flows_json.assert_awaited_once()
+    state.set_state.assert_awaited_with(ProductFSM.reviewing_flows)
 
 
 # ═══════════════════════════════════════════════════════════

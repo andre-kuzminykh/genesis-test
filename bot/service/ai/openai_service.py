@@ -24,6 +24,14 @@ SYSTEM_PROMPT = (
 )
 
 
+def _strip_json(raw: str) -> str:
+    """Strip markdown code fences from JSON response."""
+    raw = raw.strip()
+    if raw.startswith("```"):
+        raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
+    return raw
+
+
 class OpenAIService:
     """Thin async wrapper around the OpenAI chat completions API."""
 
@@ -54,13 +62,13 @@ class OpenAIService:
         return response.choices[0].message.content or ""
 
     async def transcribe_voice(self, file_path: str) -> str:
-        """Transcribe a voice/audio file using Whisper."""
         with open(file_path, "rb") as f:
             transcript = await self._client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
+                model="whisper-1", file=f,
             )
         return transcript.text
+
+    # ─── Product ────────────────────────────────────────────
 
     async def generate_product_summary(self, name: str, description: str) -> str:
         prompt = (
@@ -75,56 +83,112 @@ class OpenAIService:
         )
         return await self.chat(prompt)
 
+    # ─── Features ───────────────────────────────────────────
+
     async def generate_features_json(self, product_name: str, summary: str) -> list[dict]:
-        """Return list of features as structured data."""
         prompt = (
-            f"Product: {product_name}\n"
-            f"Summary: {summary}\n\n"
+            f"Product: {product_name}\nSummary: {summary}\n\n"
             "Generate 5-7 features. Return ONLY valid JSON array:\n"
             '[{"name": "Feature Name", "description": "One sentence description"}]\n'
             "No markdown, no explanation — pure JSON array only."
         )
-        raw = await self.chat(prompt)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
+        return json.loads(_strip_json(await self.chat(prompt)))
 
-    async def generate_stories_json(self, feature_name: str, feature_desc: str) -> list[dict]:
-        """Return user stories as structured data."""
+    async def edit_features_list(self, current_list: str,
+                                 user_instruction: str) -> list[dict]:
         prompt = (
-            f"Feature: {feature_name}\n"
-            f"Description: {feature_desc}\n\n"
-            "Generate 3-5 user stories. Return ONLY valid JSON array:\n"
-            '[{"title": "Short title", "actor": "User", '
-            '"want": "what they want", "benefit": "why"}]\n'
+            f"Current feature list:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Apply the user's changes to the feature list.\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"name": "Feature Name", "description": "Description"}]\n'
             "No markdown — pure JSON array only."
         )
-        raw = await self.chat(prompt)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
+        return json.loads(_strip_json(await self.chat(prompt)))
 
-    async def generate_flows_json(self, story_title: str) -> list[dict]:
-        """Return flows as structured data."""
+    # ─── Stories ────────────────────────────────────────────
+
+    async def generate_stories_json(self, feature_name: str,
+                                    feature_desc: str) -> list[dict]:
         prompt = (
-            f"User Story: {story_title}\n\n"
-            "Generate 1-3 user flows (primary + alternatives). "
+            f"Feature: {feature_name}\nDescription: {feature_desc}\n\n"
+            "Generate 3-5 user stories. Return ONLY valid JSON array:\n"
+            '[{"title": "Short title", "want": "what they want", "benefit": "why"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    async def edit_stories_list(self, current_list: str,
+                                user_instruction: str) -> list[dict]:
+        prompt = (
+            f"Current stories:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"title": "Title", "want": "what user wants", "benefit": "why"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    # ─── Flows ──────────────────────────────────────────────
+
+    async def generate_flows_json(self, story_title: str,
+                                  story_want: str = "") -> list[dict]:
+        prompt = (
+            f"User Story: {story_title}\n"
+            f"Want: {story_want}\n\n"
+            "Generate 1-3 user flows (primary + alternatives).\n"
             "Return ONLY valid JSON array:\n"
             '[{"title": "Flow title", "flow_type": "primary", '
-            '"description": "Brief description", '
-            '"mermaid_source": "graph TD\\n    A[Start] --> B[Step] --> C[End]"}]\n'
+            '"description": "Step-by-step flow description"}]\n'
             "No markdown — pure JSON array only."
         )
-        raw = await self.chat(prompt)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    async def edit_flows_list(self, current_list: str,
+                              user_instruction: str) -> list[dict]:
+        prompt = (
+            f"Current flows:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"title": "Title", "flow_type": "primary", "description": "..."}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    # ─── Use Cases ──────────────────────────────────────────
+
+    async def generate_use_cases_json(self, story_title: str,
+                                      flow_titles: str) -> list[dict]:
+        prompt = (
+            f"User Story: {story_title}\n"
+            f"Flows: {flow_titles}\n\n"
+            "Generate 2-4 use cases with Given/When/Then.\n"
+            "Include both functional and non-functional.\n"
+            "Return ONLY valid JSON array:\n"
+            '[{"title": "UC title", "goal": "Goal", '
+            '"given_text": "Given...", "when_text": "When...", '
+            '"then_text": "Then...", '
+            '"req_type": "functional|non-functional"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    async def edit_use_cases_list(self, current_list: str,
+                                  user_instruction: str) -> list[dict]:
+        prompt = (
+            f"Current use cases:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"title": "Title", "goal": "Goal", '
+            '"given_text": "Given...", "when_text": "When...", '
+            '"then_text": "Then...", "req_type": "functional"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    # ─── Generic ────────────────────────────────────────────
 
     async def edit_text(self, original: str, user_instruction: str) -> str:
-        """Apply user's edit instruction to existing text."""
         prompt = (
             f"Original text:\n{original}\n\n"
             f"User's edit instruction: {user_instruction}\n\n"
@@ -132,37 +196,3 @@ class OpenAIService:
             "Use plain text only, NO markdown, NO asterisks."
         )
         return await self.chat(prompt)
-
-    async def edit_features_list(self, current_list: str,
-                                 user_instruction: str) -> list[dict]:
-        """Edit a feature list based on user instruction. Return JSON array."""
-        prompt = (
-            f"Current feature list:\n{current_list}\n\n"
-            f"User's instruction: {user_instruction}\n\n"
-            "Apply the user's changes to the feature list.\n"
-            "Return ONLY a valid JSON array:\n"
-            '[{"name": "Feature Name", "description": "Description"}]\n'
-            "No markdown, no explanation — pure JSON array only."
-        )
-        raw = await self.chat(prompt)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
-
-    async def edit_stories_list(self, current_list: str,
-                                user_instruction: str) -> list[dict]:
-        """Edit a stories list based on user instruction. Return JSON array."""
-        prompt = (
-            f"Current stories list:\n{current_list}\n\n"
-            f"User's instruction: {user_instruction}\n\n"
-            "Apply the user's changes to the stories list.\n"
-            "Return ONLY a valid JSON array:\n"
-            '[{"title": "Title", "want": "what user wants", "benefit": "why"}]\n'
-            "No markdown, no explanation — pure JSON array only."
-        )
-        raw = await self.chat(prompt)
-        raw = raw.strip()
-        if raw.startswith("```"):
-            raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0].strip()
-        return json.loads(raw)
