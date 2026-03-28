@@ -17,3 +17,4 @@ class ProductFSM(StatesGroup):
     reviewing_stories = State()
     reviewing_flows = State()
     reviewing_use_cases = State()
+    reviewing_requirements = State()

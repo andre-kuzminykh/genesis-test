@@ -45,6 +45,7 @@ from service.api.flow_api import FlowAPI
 from service.api.use_case_api import UseCaseAPI
 from service.api.actor_api import ActorAPI
 from service.api.feature_actor_link_api import FeatureActorLinkAPI
+from service.api.requirement_api import RequirementAPI
 from service.voice import get_text_or_voice
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,7 @@ _flow_api = FlowAPI()
 _use_case_api = UseCaseAPI()
 _actor_api = ActorAPI()
 _feature_actor_link_api = FeatureActorLinkAPI()
+_requirement_api = RequirementAPI()
 
 PER_PAGE = 5
 
@@ -243,9 +245,8 @@ def _saved_use_cases_kb(use_cases: list[dict], story_id: str,
     rows = []
     for u in subset:
         icon = "✅" if u.get("status") == "approved" else "📋"
-        rt = u.get("req_type", "functional")[:5]
         rows.append([InlineKeyboardButton(
-            text=f"{icon} {u.get('title', 'UC')[:35]} [{rt}]",
+            text=f"{icon} {u.get('title', 'UC')[:40]}",
             callback_data=UseCaseCB(id=str(u["id"]), action="view").pack(),
         )])
     nav = _page_row("use_cases", page, total, parent_id=story_id)
@@ -295,13 +296,15 @@ def _format_stories_text(stories: list[dict]) -> str:
 
 
 def _format_flows_text(flows: list[dict]) -> str:
-    """Format flows as numbered list with descriptions."""
+    """Format flows as numbered list with mermaid diagrams."""
     lines = []
     for i, f in enumerate(flows, 1):
         ft = f.get("flow_type", "primary")
         lines.append(f"{i}. <b>{f.get('title', 'Flow')}</b> ({ft})")
         if f.get("description"):
             lines.append(f"   {f['description']}")
+        if f.get("mermaid_source"):
+            lines.append(f"\n<pre>{f['mermaid_source']}</pre>")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -310,8 +313,7 @@ def _format_use_cases_text(use_cases: list[dict]) -> str:
     """Format use cases as numbered Given/When/Then list."""
     lines = []
     for i, uc in enumerate(use_cases, 1):
-        rt = uc.get("req_type", "functional")
-        lines.append(f"{i}. <b>{uc.get('title', 'Use Case')}</b> [{rt}]")
+        lines.append(f"{i}. <b>{uc.get('title', 'Use Case')}</b>")
         if uc.get("goal"):
             lines.append(f"   Цель: {uc['goal']}")
         if uc.get("given_text"):
@@ -320,6 +322,19 @@ def _format_use_cases_text(use_cases: list[dict]) -> str:
             lines.append(f"   When: {uc['when_text']}")
         if uc.get("then_text"):
             lines.append(f"   Then: {uc['then_text']}")
+        lines.append("")
+    return "\n".join(lines).rstrip()
+
+
+def _format_requirements_text(reqs: list[dict]) -> str:
+    """Format requirements as numbered list with type and priority."""
+    lines = []
+    for i, r in enumerate(reqs, 1):
+        rt = r.get("requirement_type", "functional")
+        pr = r.get("priority", "medium")
+        lines.append(f"{i}. <b>{r.get('title', 'Req')}</b> [{rt}] ({pr})")
+        if r.get("text"):
+            lines.append(f"   {r['text']}")
         lines.append("")
     return "\n".join(lines).rstrip()
 
@@ -418,7 +433,7 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
 async def handle_page(callback: CallbackQuery, callback_data: PageCB,
                       state: FSMContext) -> None:
     entity = callback_data.entity
-    page = callback_data.page
+    raw_page = callback_data.page
     pid = callback_data.parent_id
 
     if entity == "products":
@@ -427,6 +442,7 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         except Exception:
             products = []
         total = math.ceil(len(products) / PER_PAGE) or 1
+        page = max(1, min(raw_page, total))
         await _edit_cb_msg(callback, f"📦 <b>Ваши продукты</b> ({page}/{total}):",
                            reply_markup=_products_kb(products, page=page))
 
@@ -436,6 +452,7 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         except Exception:
             features = []
         total = math.ceil(len(features) / PER_PAGE) or 1
+        page = max(1, min(raw_page, total))
         text = f"📋 <b>Фичи</b> ({page}/{total}):\n\n" + _format_features_text(features)
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_features_kb(features, pid, page=page))
@@ -453,6 +470,7 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         except Exception:
             roles = []
         total = math.ceil(len(roles) / PER_PAGE) or 1
+        page = max(1, min(raw_page, total))
         text = f"👤 <b>Роли</b> ({page}/{total}):"
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_roles_kb(roles, pid, page=page))
@@ -463,6 +481,7 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         except Exception:
             stories = []
         total = math.ceil(len(stories) / PER_PAGE) or 1
+        page = max(1, min(raw_page, total))
         text = f"📖 <b>User Stories</b> ({page}/{total}):"
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_stories_kb(stories, pid, page=page))
@@ -473,6 +492,7 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         except Exception:
             flows = []
         total = math.ceil(len(flows) / PER_PAGE) or 1
+        page = max(1, min(raw_page, total))
         text = f"🔄 <b>User Flows</b> ({page}/{total}):"
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_flows_kb(flows, pid, page=page))
@@ -483,6 +503,7 @@ async def handle_page(callback: CallbackQuery, callback_data: PageCB,
         except Exception:
             ucs = []
         total = math.ceil(len(ucs) / PER_PAGE) or 1
+        page = max(1, min(raw_page, total))
         text = f"📋 <b>Use Cases</b> ({page}/{total}):"
         await _edit_cb_msg(callback, text,
                            reply_markup=_saved_use_cases_kb(ucs, pid, page=page))
@@ -883,9 +904,15 @@ async def _start_story_flows(callback: CallbackQuery,
     await _edit_cb_msg(callback,
                        f"📖 <b>Story {story_index + 1}/{len(stories)}: "
                        f"{story.get('title', '')}</b>\n\n⏳ Генерирую user flows...")
+    # Collect role names for mermaid diagram context
+    roles = data.get("saved_roles", [])
+    role_names = ", ".join(r.get("name", "") for r in roles)
+
     try:
         flows_data = await _ai.generate_flows_json(
-            story.get("title", ""), story.get("want_text", story.get("want", ""))
+            story.get("title", ""),
+            story.get("want_text", story.get("want", "")),
+            roles=role_names,
         )
     except Exception as exc:
         await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
@@ -893,7 +920,8 @@ async def _start_story_flows(callback: CallbackQuery,
 
     draft = [{"title": fd.get("title", "Flow"),
               "flow_type": fd.get("flow_type", "primary"),
-              "description": fd.get("description", "")}
+              "description": fd.get("description", ""),
+              "mermaid_source": fd.get("mermaid_source", "")}
              for fd in flows_data]
     await state.update_data(draft_flows=draft)
     await state.set_state(ProductFSM.reviewing_flows)
@@ -938,8 +966,7 @@ async def _start_story_use_cases(callback: CallbackQuery,
               "goal": u.get("goal", ""),
               "given_text": u.get("given_text", ""),
               "when_text": u.get("when_text", ""),
-              "then_text": u.get("then_text", ""),
-              "req_type": u.get("req_type", "functional")}
+              "then_text": u.get("then_text", "")}
              for u in uc_data]
     await state.update_data(draft_use_cases=draft)
     await state.set_state(ProductFSM.reviewing_use_cases)
@@ -956,6 +983,62 @@ async def _start_story_use_cases(callback: CallbackQuery,
         reply_markup=_review_kb(
             back_cb=FeatureCB(id=fid, action="back").pack(),
             next_cb="wizard_save_use_cases",
+        ),
+    )
+
+
+async def _start_uc_requirements(callback: CallbackQuery,
+                                  state: FSMContext,
+                                  uc_index: int) -> None:
+    """Generate requirements TEXT for use case at given index, or next story if done."""
+    data = await state.get_data()
+    use_cases = data.get("saved_use_cases", [])
+    if uc_index >= len(use_cases):
+        # All use cases done for this story — next story's flows
+        story_index = data.get("story_index", 0) + 1
+        await _start_story_flows(callback, state, story_index)
+        return
+
+    uc = use_cases[uc_index]
+    await state.update_data(uc_index=uc_index, current_uc_id=str(uc.get("id", "")))
+
+    gwt = (
+        f"Given: {uc.get('given_text', '')} "
+        f"When: {uc.get('when_text', '')} "
+        f"Then: {uc.get('then_text', '')}"
+    )
+
+    await _edit_cb_msg(callback,
+                       f"📋 <b>UC {uc_index + 1}/{len(use_cases)}: "
+                       f"{uc.get('title', '')}</b>\n\n⏳ Генерирую требования...")
+    try:
+        reqs_data = await _ai.generate_requirements_json(
+            uc.get("title", ""), uc.get("goal", ""), gwt
+        )
+    except Exception as exc:
+        await _edit_cb_msg(callback, f"⚠️ Ошибка: {exc}")
+        return
+
+    draft = [{"title": r.get("title", "Req"),
+              "text": r.get("text", ""),
+              "requirement_type": r.get("requirement_type", "functional"),
+              "priority": r.get("priority", "medium")}
+             for r in reqs_data]
+    await state.update_data(draft_requirements=draft)
+    await state.set_state(ProductFSM.reviewing_requirements)
+
+    fid = data.get("current_feature_id", "")
+    text = (
+        f"📋 <b>UC {uc_index + 1}/{len(use_cases)}: {uc.get('title', '')}</b>\n\n"
+        "📝 <b>Требования:</b>\n"
+        "<i>Редактируйте текстом/голосом, затем Далее</i>\n\n"
+        + _format_requirements_text(draft)
+    )
+    await _edit_cb_msg(
+        callback, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_requirements",
         ),
     )
 
@@ -1407,20 +1490,25 @@ async def handle_save_flows(callback: CallbackQuery,
     saved = []
     for fd in draft:
         try:
-            flow = await _flow_api.create({
+            flow_data = {
                 "product_id": pid,
                 "feature_id": fid,
                 "story_id": sid,
                 "title": fd.get("title", "Flow"),
-                "description": fd.get("description", ""),
                 "flow_type": fd.get("flow_type", "primary"),
-            })
+            }
+            if fd.get("description"):
+                flow_data["description"] = fd["description"]
+            if fd.get("mermaid_source"):
+                flow_data["mermaid_source"] = fd["mermaid_source"]
+            flow = await _flow_api.create(flow_data)
             saved.append(flow)
         except Exception as exc:
             log.warning("Flow save failed: %s", exc)
             saved.append({"id": "", "title": fd.get("title", "Flow"),
                           "flow_type": fd.get("flow_type", "primary"),
                           "description": fd.get("description", ""),
+                          "mermaid_source": fd.get("mermaid_source", ""),
                           "status": "draft"})
 
     await state.update_data(saved_flows=saved)
@@ -1447,7 +1535,7 @@ async def handle_use_cases_edit(message: Message, state: FSMContext,
     await _send_or_edit(message, state, "⏳ Применяю правки к use cases...")
 
     current_text = "\n".join(
-        f"{i}. {u['title']} [{u.get('req_type', 'functional')}]\n"
+        f"{i}. {u['title']}\n"
         f"   Given: {u.get('given_text', '')}\n"
         f"   When: {u.get('when_text', '')}\n"
         f"   Then: {u.get('then_text', '')}"
@@ -1483,12 +1571,15 @@ async def handle_use_cases_edit(message: Message, state: FSMContext,
 @router.callback_query(F.data == "wizard_save_use_cases")
 async def handle_save_use_cases(callback: CallbackQuery,
                                 state: FSMContext) -> None:
-    """Save use cases to backend, then advance to next story or feature."""
+    """Save use cases to backend, then drill into requirements for each UC."""
     data = await state.get_data()
     draft = data.get("draft_use_cases", [])
     pid = data.get("current_feature_product_id", data.get("product_id", ""))
     fid = data.get("current_feature_id", "")
     sid = data.get("current_story_id", "")
+    saved_flows = data.get("saved_flows", [])
+    # Use first saved flow's id as flow_id (required by schema)
+    default_flow_id = str(saved_flows[0]["id"]) if saved_flows and saved_flows[0].get("id") else ""
 
     if not draft:
         await callback.answer("Нет use cases для сохранения", show_alert=True)
@@ -1496,25 +1587,128 @@ async def handle_save_use_cases(callback: CallbackQuery,
 
     await _edit_cb_msg(callback, "⏳ Сохраняю...")
 
+    saved = []
     for uc in draft:
         try:
-            await _use_case_api.create({
+            uc_data = {
                 "product_id": pid,
                 "feature_id": fid,
                 "story_id": sid,
+                "flow_id": default_flow_id,
                 "title": uc.get("title", "UC"),
-                "goal": uc.get("goal", ""),
-                "given_text": uc.get("given_text", ""),
-                "when_text": uc.get("when_text", ""),
-                "then_text": uc.get("then_text", ""),
-                "req_type": uc.get("req_type", "functional"),
-            })
+            }
+            if uc.get("goal"):
+                uc_data["goal"] = uc["goal"]
+            if uc.get("given_text"):
+                uc_data["given_text"] = uc["given_text"]
+            if uc.get("when_text"):
+                uc_data["when_text"] = uc["when_text"]
+            if uc.get("then_text"):
+                uc_data["then_text"] = uc["then_text"]
+            result = await _use_case_api.create(uc_data)
+            saved.append(result)
         except Exception as exc:
             log.warning("UseCase save failed: %s", exc)
+            saved.append({"id": "", "title": uc.get("title", "UC"),
+                          "goal": uc.get("goal", ""),
+                          "given_text": uc.get("given_text", ""),
+                          "when_text": uc.get("when_text", ""),
+                          "then_text": uc.get("then_text", ""),
+                          "status": "draft"})
 
-    # Advance: next story's flows → next role → next feature
-    story_index = data.get("story_index", 0) + 1
-    await _start_story_flows(callback, state, story_index)
+    await state.update_data(saved_use_cases=saved)
+    # Drill into requirements for first use case
+    await _start_uc_requirements(callback, state, 0)
+    await callback.answer()
+
+
+# ═══════════════════════════════════════════════════════════
+# reviewing_requirements — edit TEXT list by typing/voice
+# ═══════════════════════════════════════════════════════════
+
+
+@router.message(ProductFSM.reviewing_requirements)
+async def handle_requirements_edit(message: Message, state: FSMContext,
+                                   bot: Bot) -> None:
+    instruction = await get_text_or_voice(message, bot)
+    await _delete_user_msg(message)
+    if not instruction:
+        return
+
+    data = await state.get_data()
+    draft = data.get("draft_requirements", [])
+    fid = data.get("current_feature_id", "")
+    await _send_or_edit(message, state, "⏳ Применяю правки к требованиям...")
+
+    current_text = "\n".join(
+        f"{i}. {r['title']} [{r.get('requirement_type', 'functional')}] "
+        f"({r.get('priority', 'medium')}): {r.get('text', '')}"
+        for i, r in enumerate(draft, 1)
+    )
+
+    try:
+        edited = await _ai.edit_requirements_list(current_text, instruction)
+    except Exception as exc:
+        await _send_or_edit(message, state, f"⚠️ Ошибка: {exc}")
+        return
+
+    await state.update_data(draft_requirements=edited)
+    text = (
+        "📝 <b>Обновлённые требования:</b>\n"
+        "<i>Можете продолжить редактирование или нажмите Далее</i>\n\n"
+        + _format_requirements_text(edited)
+    )
+    await _send_or_edit(
+        message, state, text,
+        reply_markup=_review_kb(
+            back_cb=FeatureCB(id=fid, action="back").pack(),
+            next_cb="wizard_save_requirements",
+        ),
+    )
+
+
+# ═══════════════════════════════════════════════════════════
+# wizard_save_requirements — save to backend, next UC or next story
+# ═══════════════════════════════════════════════════════════
+
+
+@router.callback_query(F.data == "wizard_save_requirements")
+async def handle_save_requirements(callback: CallbackQuery,
+                                   state: FSMContext) -> None:
+    """Save requirements to backend, then advance to next use case or story."""
+    data = await state.get_data()
+    draft = data.get("draft_requirements", [])
+    pid = data.get("current_feature_product_id", data.get("product_id", ""))
+    fid = data.get("current_feature_id", "")
+    uc_id = data.get("current_uc_id", "")
+
+    if not draft:
+        await callback.answer("Нет требований для сохранения", show_alert=True)
+        return
+
+    await _edit_cb_msg(callback, "⏳ Сохраняю...")
+
+    for req in draft:
+        try:
+            req_data = {
+                "product_id": pid,
+                "feature_id": fid,
+                "title": req.get("title", "Req"),
+                "requirement_type": req.get("requirement_type", "functional"),
+            }
+            if uc_id:
+                req_data["primary_use_case_id"] = uc_id
+            if req.get("text"):
+                req_data["text"] = req["text"]
+            if req.get("priority"):
+                req_data["priority"] = req["priority"]
+            await _requirement_api.create(req_data)
+        except Exception as exc:
+            log.warning("Requirement save failed: %s", exc)
+
+    # Advance: next use case's requirements, or next story
+    uc_index = data.get("uc_index", 0) + 1
+    await _start_uc_requirements(callback, state, uc_index)
     await callback.answer()
 
 
@@ -1708,7 +1902,7 @@ async def handle_use_case(callback: CallbackQuery, callback_data: UseCaseCB,
             return
 
         sid = uc.get("story_id", "")
-        text = f"📋 <b>{uc.get('title', 'UC')}</b> [{uc.get('req_type', 'functional')}]\n\n"
+        text = f"📋 <b>{uc.get('title', 'UC')}</b>\n\n"
         if uc.get("goal"):
             text += f"<b>Цель:</b> {uc['goal']}\n\n"
         if uc.get("given_text"):

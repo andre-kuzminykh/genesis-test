@@ -160,17 +160,23 @@ class OpenAIService:
         )
         return json.loads(_strip_json(await self.chat(prompt)))
 
-    # ─── Flows ──────────────────────────────────────────────
+    # ─── Flows (with mermaid sequence) ──────────────────────
 
     async def generate_flows_json(self, story_title: str,
-                                  story_want: str = "") -> list[dict]:
+                                  story_want: str = "",
+                                  roles: str = "") -> list[dict]:
         prompt = (
             f"User Story: {story_title}\n"
-            f"Want: {story_want}\n\n"
+            f"Want: {story_want}\n"
+            f"Actors/Roles: {roles}\n\n"
             "Generate 1-3 user flows (primary + alternatives).\n"
+            "For each flow generate a Mermaid sequence diagram showing "
+            "interactions between actors (roles) and systems.\n"
             "Return ONLY valid JSON array:\n"
             '[{"title": "Flow title", "flow_type": "primary", '
-            '"description": "Step-by-step flow description"}]\n'
+            '"description": "Step-by-step flow description", '
+            '"mermaid_source": "sequenceDiagram\\n    Actor->>System: action\\n    ..."}]\n'
+            "IMPORTANT: mermaid_source must be valid Mermaid sequenceDiagram syntax.\n"
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))
@@ -181,25 +187,26 @@ class OpenAIService:
             f"Current flows:\n{current_list}\n\n"
             f"User's instruction: {user_instruction}\n\n"
             "Return ONLY a valid JSON array:\n"
-            '[{"title": "Title", "flow_type": "primary", "description": "..."}]\n'
+            '[{"title": "Title", "flow_type": "primary", '
+            '"description": "...", "mermaid_source": "sequenceDiagram\\n..."}]\n'
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))
 
-    # ─── Use Cases ──────────────────────────────────────────
+    # ─── Use Cases (Given/When/Then) ────────────────────────
 
     async def generate_use_cases_json(self, story_title: str,
                                       flow_titles: str) -> list[dict]:
         prompt = (
             f"User Story: {story_title}\n"
             f"Flows: {flow_titles}\n\n"
-            "Generate 2-4 use cases with Given/When/Then.\n"
-            "Include both functional and non-functional.\n"
+            "Generate 2-4 use cases derived from the user flows above.\n"
+            "Each use case must logically follow from the flows.\n"
+            "Use Given/When/Then format.\n"
             "Return ONLY valid JSON array:\n"
             '[{"title": "UC title", "goal": "Goal", '
             '"given_text": "Given...", "when_text": "When...", '
-            '"then_text": "Then...", '
-            '"req_type": "functional|non-functional"}]\n'
+            '"then_text": "Then..."}]\n'
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))
@@ -212,7 +219,39 @@ class OpenAIService:
             "Return ONLY a valid JSON array:\n"
             '[{"title": "Title", "goal": "Goal", '
             '"given_text": "Given...", "when_text": "When...", '
-            '"then_text": "Then...", "req_type": "functional"}]\n'
+            '"then_text": "Then..."}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    # ─── Requirements (functional / non-functional) ─────────
+
+    async def generate_requirements_json(self, use_case_title: str,
+                                         use_case_goal: str = "",
+                                         given_when_then: str = "") -> list[dict]:
+        prompt = (
+            f"Use Case: {use_case_title}\n"
+            f"Goal: {use_case_goal}\n"
+            f"Scenario: {given_when_then}\n\n"
+            "Decompose this use case into specific requirements.\n"
+            "Include both functional and non-functional requirements.\n"
+            "Return ONLY valid JSON array:\n"
+            '[{"title": "Requirement title", "text": "Detailed description", '
+            '"requirement_type": "functional|non-functional", '
+            '"priority": "high|medium|low"}]\n'
+            "No markdown — pure JSON array only."
+        )
+        return json.loads(_strip_json(await self.chat(prompt)))
+
+    async def edit_requirements_list(self, current_list: str,
+                                     user_instruction: str) -> list[dict]:
+        prompt = (
+            f"Current requirements:\n{current_list}\n\n"
+            f"User's instruction: {user_instruction}\n\n"
+            "Return ONLY a valid JSON array:\n"
+            '[{"title": "Title", "text": "Description", '
+            '"requirement_type": "functional|non-functional", '
+            '"priority": "high|medium|low"}]\n'
             "No markdown — pure JSON array only."
         )
         return json.loads(_strip_json(await self.chat(prompt)))
